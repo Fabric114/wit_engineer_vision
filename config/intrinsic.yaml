@@ -1,0 +1,39 @@
+# 内参标定参数 intrinsic_calib_node / offline_calib 
+
+image_topic: "/camera/image_raw"
+camera_name: "engineer_camera"
+
+# 标定板: chessboard/charuco/circle_grid
+board_type: "chessboard"
+
+# --- 棋盘格: 
+chessboard_columns: 11
+chessboard_rows: 8
+chessboard_square_length_m: 0.025     
+
+# --- ChArUco ---
+charuco_squares_x: 14
+charuco_squares_y: 9
+charuco_square_length_m: 0.020
+charuco_marker_length_m: 0.015
+charuco_dictionary: "DICT_5X5_1000"
+
+# --- 圆点板 ---
+circle_columns: 7
+circle_rows: 7
+circle_spacing_m: 0.020
+
+# --- 采样门槛 ---
+min_points: 20                # 单张至少检出多少点
+min_sharpness: 80.0           # Laplacian 方差, 过滤运动模糊
+min_coverage: 0.035           # 板子至少占画面这么大比例
+min_signature_distance: 0.05  # 视角指纹距离, 小于它算重复视角
+min_samples: 15               # 少于这个数不给标定
+max_samples: 300
+max_view_error_px: 0.8        # 单视图重投影误差剔除上限
+warn_rms_px: 0.5              # RMS 超过就提醒重采
+
+auto_capture: true
+auto_interval_s: 0.5
+show_image: true
+output_directory: ""          # 留空 = ./calibration/<时间戳>/

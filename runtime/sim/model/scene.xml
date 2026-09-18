@@ -1,0 +1,55 @@
+<!-- 占位场景: 6 轴串联臂 + 地面 + 兑换站占位块.
+     TODO: 用你机器人的真实 URDF/MJCF 替换. 关节数、link 尺寸、惯量均为占位. -->
+<mujoco model="engineer_scene">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81"/>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="3 3 0.1" rgba="0.8 0.8 0.8 1"/>
+
+    <!-- ===== 6 轴机械臂 (占位链, 每节 0.2m) ===== -->
+    <body name="base" pos="0 0 0.1">
+      <geom type="cylinder" size="0.05 0.05" rgba="0.3 0.3 0.3 1"/>
+      <body name="l1" pos="0 0 0.05">
+        <joint name="j1" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+        <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.03"/>
+        <body name="l2" pos="0 0 0.2">
+          <joint name="j2" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
+          <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.03"/>
+          <body name="l3" pos="0 0 0.2">
+            <joint name="j3" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
+            <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.025"/>
+            <body name="l4" pos="0 0 0.2">
+              <joint name="j4" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+              <geom type="capsule" fromto="0 0 0 0 0 0.15" size="0.02"/>
+              <body name="l5" pos="0 0 0.15">
+                <joint name="j5" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
+                <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
+                <body name="l6" pos="0 0 0.1">
+                  <joint name="j6" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
+                  <geom name="tcp" type="box" size="0.03 0.03 0.02" rgba="0.9 0.2 0.2 1"/>
+                  <site name="tcp_site" pos="0 0 0.02"/>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- ===== 兑换站占位 (能量单元装配目标) ===== -->
+    <body name="exchange_station" pos="0.6 0 0.3">
+      <geom type="box" size="0.14 0.14 0.14" rgba="0.2 0.4 0.9 0.6"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position joint="j1" kp="50"/>
+    <position joint="j2" kp="50"/>
+    <position joint="j3" kp="50"/>
+    <position joint="j4" kp="30"/>
+    <position joint="j5" kp="30"/>
+    <position joint="j6" kp="20"/>
+  </actuator>
+</mujoco>

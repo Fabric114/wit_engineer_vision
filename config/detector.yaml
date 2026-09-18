@@ -1,0 +1,49 @@
+# 检测节点参数 (detector_node 启动时直接读取本文件)
+# 后端由 type 切换; 也可用 ROS 参数覆盖:
+#   ros2 run detector detector_node --ros-args -p type:=eu
+
+# tc = 兑换站/科技核心 关键点 (yolo-pose, OpenVINO)  ← 纯 OpenVINO 即可运行
+# eu = 能量单元/矿石 目标检测 (yolo detect)  ← 默认指向 OpenVINO IR, 纯 OpenVINO 运行;
+#      模型指向 .pt 时改走 ultralytics (需 pip install ultralytics)
+type: eu
+
+# ---- 输入源: 共享内存 (相机节点写入) ----
+input:
+  source: shm                 # shm | topic
+  region: ""                  # 空 = 用 shm_pkg/config/shm.yaml 的默认区域
+  poll_hz: 200.0              # 轮询共享内存的频率 (Hz)
+  frame_id: "camera"
+  image_topic: "/camera/image_raw"   # source=topic 时订阅
+
+# ---- 可视化与输出 ----
+debug: true                    # 打印每帧检测数与耗时
+show_image: true               # 本地 cv2.imshow 调试窗口 (无显示环境设为 false)
+publish_annotated: true        # 发布标注图 sensor_msgs/Image
+annotated_topic: "/detector/annotated"
+observation_topic: "/detector/keypoints"   # tc: 出 interfaces/KeypointObservation
+
+# ---- 兑换站关键点检测 (yolo-pose, OpenVINO) ----
+tc:
+  model: "tc/openvino_best/best.xml"   # 相对 detector/model; 绝对路径也可
+  device: "CPU"                        # CPU | GPU | AUTO
+  conf_threshold: 0.5
+  keypoint_score_threshold: 0.2
+  max_instances: 8
+  schema: "exchange_station"
+  # IR 无 metadata.yaml, 类别/关键点名在此声明 (顺序与模型输出一一对应)
+  class_names: {0: "pillar", 1: "exchange"}
+  keypoint_names: ["TL", "TR", "BL", "BR", "ring",
+                   "light_BR", "light_TR", "shell_R", "shell_M", "shell_L",
+                   "light_TL", "light_BL"]
+
+# ---- 能量单元/矿石检测 (yolo detect) ----
+# 后端按 model 自动判定: 指向 OpenVINO IR (.xml / _openvino_model 目录) 走纯 OpenVINO,
+# 无需 torch/ultralytics; 指向 .pt 则走 ultralytics (需 pip install ultralytics)。
+eu:
+  model: "eu/best_openvino_model"   # 纯 OpenVINO IR 目录 (best.xml/best.bin/metadata.yaml), 无需 torch/ultralytics
+                                     # 备选 .pt (走 ultralytics): eu/best-v2.pt | eu/yolo11n/best.pt
+  device: "AUTO"                    # OV 自动选设备 (CPU/GPU/NPU); 也可写 CPU|GPU。ultralytics 后端用 cpu|0...
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+  max_instances: 16
+  schema: "energy_unit"

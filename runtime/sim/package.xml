@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>sim</name>
+  <version>0.0.1</version>
+  <description>MuJoCo 仿真后端: 与真机 firmware bridge 发布同一套 topic (ArmMcuState / 订阅 ArmHostCommand)</description>
+  <maintainer email="shaozi2233@gmail.com">sxh</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>interfaces</depend>
+  <!-- mujoco 由 pip 提供 (本机已装 mujoco-3.12) -->
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

@@ -1,0 +1,20 @@
+# camera -> arm_base 外参标定参数
+#
+# 方法 A (单次测量): 板子固定在场地, 量出它在 arm_base 下的位姿填这里,
+#                    配合一张图的 PnP 结果即可得外参。
+# 方法 B (多姿态, 推荐): 板子固定在末端, 臂摆 10~15 个姿态, 用 FK + PnP 一起解。
+#                       需要真实 DH 到位 (src/task/arm_core/config/system_config.yaml)。
+
+method: "B"
+
+# 方法 A: 标定板原点在 arm_base 系下的位姿 (米 / 度, ZYX 欧拉)
+base_from_board:
+  xyz_m: [0.0, 0.0, 0.0]      # TODO
+  rpy_deg: [0.0, 0.0, 0.0]    # TODO
+
+# 方法 B: 采集参数
+poses_required: 12
+min_rotation_between_poses_deg: 8.0   # 姿态之间旋转差太小会让解退化
+
+# 输出: 写成 vision_tf 直接读的 extrinsic.yaml
+output_path: ""               # 留空 = ./calibration/<时间戳>/extrinsic.yaml

@@ -1,0 +1,33 @@
+# 数据驱动关键点 schema: 名字 -> 3D 模型点。新目标 = 新增条目, 不改代码。
+#
+# 名字必须与模型 metadata.yaml 里的 kpt_names 完全一致 (RM2026 yolopose 的 12 个点),
+# 权重路径不在这里 —— 那是 keypoint_detector/config/detector.yaml 的事, 一处一个真值。
+#
+# 单位: 米。坐标系: 目标自身坐标系, 原点取兑换口中心, X 右 Y 下 Z 朝外 (与相机光学系同向,
+# 这样 PnP 出来的 R 接近单位阵, 调试时一眼能看出对不对)。
+# 参考: BIT pnp_solver_pkg/config/world_points.yaml (那份是毫米, 搬过来要 /1000)
+
+pillar:                      # class_id 0
+  class_id: 0
+  keypoints:                 # TODO: 按 RM2026 官方图纸实测填写
+    # TL:   [x, y, z]
+    # TR:   [x, y, z]
+    # BL:   [x, y, z]
+    # BR:   [x, y, z]
+    # ring: [x, y, z]
+
+exchange:                    # class_id 1
+  class_id: 1
+  keypoints:                 # TODO: 按 RM2026 官方图纸实测填写
+    # light_BR: [x, y, z]
+    # light_TR: [x, y, z]
+    # shell_R:  [x, y, z]
+    # shell_M:  [x, y, z]
+    # shell_L:  [x, y, z]
+    # light_TL: [x, y, z]
+    # light_BL: [x, y, z]
+
+# 发射机构 (预留, 本赛季不实现):
+# launcher:
+#   class_id: 2
+#   keypoints: {...}

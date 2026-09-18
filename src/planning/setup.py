@@ -1,0 +1,21 @@
+from setuptools import find_packages, setup
+
+package_name = "planning"
+
+setup(
+    name=package_name,
+    version="0.0.1",
+    packages=find_packages(exclude=["test"]),
+    data_files=[
+        ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
+        ("share/" + package_name, ["package.xml"]),
+    ],
+    install_requires=["setuptools", "numpy", "scipy"],
+    zip_safe=True,
+    maintainer="sxh",
+    maintainer_email="shaozi2233@gmail.com",
+    description="纯算法库: 碰撞检测 / 关节路径 (OMPL) / 装配流形约束",
+    license="MIT",
+    tests_require=["pytest"],
+    entry_points={"console_scripts": []},
+)

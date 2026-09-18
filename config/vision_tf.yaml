@@ -1,0 +1,26 @@
+# camera_optical -> arm_base 外参, 以及位姿输出参数。
+#
+# 这里只放外参: 内参在 camera 包 config/camera_info.yaml (由 camera_calib 标出来),
+# 3D 模型点在 pnp_solver 包 config/keypoint_schema.yaml。一处一个真值。
+# 外参由 camera_calib 的手眼标定生成 (camera_calib/config/hand_eye.yaml -> extrinsic.yaml),
+# 标完把 4x4 填到下面, 或用 extrinsic_file 直接指向标定输出。
+# 参考: BIT camera_mount_calibration_pkg
+
+extrinsic_file: ""            # 留空则用下面的 arm_base_from_camera
+
+# TODO: 单位阵只是占位, 相机没装到车上之前一切下游位姿都不可信
+arm_base_from_camera:
+  rows: 4
+  cols: 4
+  data: [1.0, 0.0, 0.0, 0.0,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 1.0, 0.0,
+         0.0, 0.0, 0.0, 1.0]
+
+# 坐标系名字 (与 README_PRE.md 第四节一致)
+camera_frame: "camera_optical"
+base_frame: "arm_base"
+
+publish_static_tf: true       # 把外参也发成 static TF, rviz 里能直接看
+pose_topic: "/vision/exchange_pose"
+min_confidence: 0.5           # 低于此置信度的位姿 valid=false, 不让下游用

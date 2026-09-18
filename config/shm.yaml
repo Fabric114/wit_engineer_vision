@@ -1,0 +1,14 @@
+# 共享内存图像区域参数 (shm_pkg)
+# 生产者 (ros2_camera_pkg) 与消费者 (detector / solver) 都读这一份, 保证对齐。
+image:
+  # /dev/shm 下的区域名 (会生成 /dev/shm/<region>)
+  region: "sxh_engineer_image"
+  # 槽位能容纳的最大分辨率与通道数; 实际帧可以更小, 但不能超过。
+  # 与 ros2_camera_pkg/config/camera.yaml 的 width/height 对齐 (当前 960x720 bgr8)。
+  max_height: 720
+  max_width: 960
+  max_channels: 3
+  # 缓冲槽数量, 三缓冲=3 (读者有约 n_slots 帧余量, 不会读到正在写的槽)
+  n_slots: 3
+  # 像素类型: uint8 (bgr8) | uint16 | float32
+  dtype: "uint8"
