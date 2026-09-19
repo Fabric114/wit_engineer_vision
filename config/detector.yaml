@@ -4,7 +4,7 @@
 
 # tc = 兑换站/科技核心 关键点 (yolo-pose, OpenVINO)  ← 纯 OpenVINO 即可运行
 # eu = 能量单元/矿石 目标检测 (yolo detect)  ← 默认指向 OpenVINO IR, 纯 OpenVINO 运行;
-#      模型指向 .pt 时改走 ultralytics (需 pip install ultralytics)
+#      模型指向 .pt 时改走 ultralytics
 type: eu
 
 # ---- 输入源: 共享内存 (相机节点写入) ----

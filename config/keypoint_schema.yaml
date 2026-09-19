@@ -27,7 +27,7 @@ exchange:                    # class_id 1
     # light_TL: [x, y, z]
     # light_BL: [x, y, z]
 
-# 发射机构 (预留, 本赛季不实现):
+# 发射机构 :
 # launcher:
 #   class_id: 2
 #   keypoints: {...}

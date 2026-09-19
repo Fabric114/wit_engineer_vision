@@ -1,6 +1,5 @@
 """内参标定的纯算法: 采样质量把关 -> 反复标定剔除坏视图 -> 存 ROS CameraInfo。
 
-参考: BIT charuco_calibration_pkg/calibration.py
 零 ROS 依赖, 可用合成图片直接 pytest。
 """
 

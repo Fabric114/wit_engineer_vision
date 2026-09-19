@@ -3,7 +3,7 @@
 # 方法 A (单次测量): 板子固定在场地, 量出它在 arm_base 下的位姿填这里,
 #                    配合一张图的 PnP 结果即可得外参。
 # 方法 B (多姿态, 推荐): 板子固定在末端, 臂摆 10~15 个姿态, 用 FK + PnP 一起解。
-#                       需要真实 DH 到位 (src/task/arm_core/config/system_config.yaml)。
+#                       需要真实 DH 到位 
 
 method: "B"
 

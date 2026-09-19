@@ -1,9 +1,7 @@
 """/dev/shm 上一个内存映射文件的 RAII 封装 —— 纯逻辑, 零 ROS 依赖。
 
-对标 ~/awakening/3rdparty/daedalus_interface/shm_region.hpp 的 ShmRegion:
-用 open/ftruncate/mmap 把一个文件映射进地址空间, 之后按字节偏移读写。区别是
-daedalus 用普通 open() 映射 /tmp 下的文件 (为了兼容 Rust memmap2), 这里用
-/dev/shm (Linux 上就是 tmpfs, 纯内存), 语义上更接近「共享内存」。
+用 open/ftruncate/mmap 把一个文件映射进地址空间, 之后按字节偏移读写。这里
+使用/dev/shm (Linux 上就是 tmpfs, 纯内存), 语义上更接近「共享内存」。
 
 生命周期: 生产者 create() 拥有该区域 (owner=True), 退出时 close() 会 unlink
 删除文件; 消费者 open() 只映射不拥有, close() 只解除映射不删文件。这跟

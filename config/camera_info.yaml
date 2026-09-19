@@ -1,8 +1,7 @@
-# 标准 ROS CameraInfo。这是**示例**(取自 BIT 的大恒相机 960x720 标定结果),
-# 换成自己的标定产物: camera_calib 跑完把 camera_info.yaml 拷到本目录同名文件。
+# camera_calib 跑完把 camera_info.yaml 拷到本目录同名文件。
 image_width: 960
 image_height: 720
-camera_name: daheng_camera
+camera_name: hik_camera
 distortion_model: plumb_bob
 camera_matrix:
   rows: 3

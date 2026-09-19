@@ -13,7 +13,7 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>interfaces</depend>
-  <!-- mujoco 由 pip 提供 (本机已装 mujoco-3.12) -->
+
 
   <export>
     <build_type>ament_python</build_type>

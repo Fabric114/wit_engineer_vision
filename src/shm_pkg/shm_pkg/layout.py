@@ -1,7 +1,6 @@
 """共享内存图像区域的二进制布局 —— 纯逻辑, 零 ROS / 零 mmap 依赖。
 
-对标 ~/awakening/3rdparty/daedalus_interface/shm_layout.hpp: 用固定字段的头部
-+ magic/version 把内存布局钉死, 这样同一个 /dev/shm 文件将来也能被 C++/Rust
+用固定字段的头部+ magic/version 把内存布局钉死, 这样同一个 /dev/shm 文件将来也能被 C++/Rust
 按同样的偏移解读。区域整体布局:
 
     ┌──────────────────────────────┐ offset 0

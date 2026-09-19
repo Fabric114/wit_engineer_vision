@@ -1,7 +1,6 @@
 """在帧上画检测结果 —— 框 + 标签 + 关键点。纯 cv2/numpy, 供节点做调试可视化。
 
-对标 pose_detect_pkg/visualization.py 与 2D-3D yolo_node 的标注逻辑: 画在副本上,
-颜色按类别区分 (BGR), 关键点画点 + 名字, 越界点跳过。
+画在副本上,颜色按类别区分 (BGR), 关键点画点 + 名字, 越界点跳过。
 """
 
 from __future__ import annotations

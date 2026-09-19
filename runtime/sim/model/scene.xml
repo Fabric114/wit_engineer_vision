@@ -1,5 +1,5 @@
 <!-- 占位场景: 6 轴串联臂 + 地面 + 兑换站占位块.
-     TODO: 用你机器人的真实 URDF/MJCF 替换. 关节数、link 尺寸、惯量均为占位. -->
+     用你机器人的真实 URDF/MJCF 替换. 关节数、link 尺寸、惯量均为占位. -->
 <mujoco model="engineer_scene">
   <compiler angle="radian" autolimits="true"/>
   <option timestep="0.002" gravity="0 0 -9.81"/>

@@ -1,7 +1,4 @@
 """平面标定板: 棋盘格 / ChArUco / 对称圆点板。
-
-统一接口 detect(gray) -> Detection, 让 intrinsic.py 和标定节点不关心用的哪种板。
-参考: BIT charuco_calibration_pkg/patterns.py, 这里把棋盘格作为一等公民补上。
 """
 
 from __future__ import annotations

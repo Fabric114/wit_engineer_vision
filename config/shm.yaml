@@ -2,7 +2,7 @@
 # 生产者 (ros2_camera_pkg) 与消费者 (detector / solver) 都读这一份, 保证对齐。
 image:
   # /dev/shm 下的区域名 (会生成 /dev/shm/<region>)
-  region: "sxh_engineer_image"
+  region: "wit_engineer_image"
   # 槽位能容纳的最大分辨率与通道数; 实际帧可以更小, 但不能超过。
   # 与 ros2_camera_pkg/config/camera.yaml 的 width/height 对齐 (当前 960x720 bgr8)。
   max_height: 720

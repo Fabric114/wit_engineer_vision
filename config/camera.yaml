@@ -12,7 +12,7 @@ hik_camera:
   width: 960
   height: 720
   binning: 1
-  exposure_us: 9000.0
+  exposure_us: 5000.0
   gain: 16.0
   bayer_mode: 0
   wb_mode: "continuous"
