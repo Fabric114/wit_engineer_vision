@@ -31,10 +31,6 @@ DRIVER_KEYS = (
 
 
 def _config_dir() -> Path:
-    """统一读工作区根 config/ (wit_engineer_vision/config/)。
-
-    向上查找同时含 config/ 与 src/ 的工作区根; 源码运行与拷贝安装下都能命中。
-    """
     here = Path(__file__).resolve()
     for parent in here.parents:
         if (parent / "config").is_dir() and (parent / "src").is_dir():
@@ -59,7 +55,6 @@ def _build_driver(cam_type: str, params: dict, logger):
         from ros2_camera_pkg.hik_camera import HikCamera
         return HikCamera(**kwargs)
     if cam_type == "daheng":
-        # gxipy 作为源码内的顶层包分发, 未随模块安装, 补到 sys.path 再导入
         import sys
         pkg_root = str(Path(__file__).resolve().parents[1])
         if pkg_root not in sys.path:
