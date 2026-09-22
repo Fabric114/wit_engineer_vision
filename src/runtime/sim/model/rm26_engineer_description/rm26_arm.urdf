@@ -3,22 +3,22 @@
      Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot
-  name="GC">
+  name="rm26_arm">
   <link
     name="base_link">
     <inertial>
       <origin
-        xyz="0.00024619939328266 0.150838930266798 -0.000497088298818348"
+        xyz="0.00024619939328266 0.000497088298818357 0.150838930266798"
         rpy="0 0 0" />
       <mass
         value="122.092710334633" />
       <inertia
         ixx="3.7669452280776"
-        ixy="-0.00646755912932073"
-        ixz="0.00317132797577638"
-        iyy="6.7732794192064"
-        iyz="0.0130583098611044"
-        izz="3.441133324771" />
+        ixy="-0.00317132797577637"
+        ixz="-0.0064675591293208"
+        iyy="3.441133324771"
+        iyz="-0.0130583098611042"
+        izz="6.7732794192064" />
     </inertial>
     <visual>
       <origin
@@ -26,7 +26,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/base_link.STL" />
+          filename="package://GC3.1/meshes/base_link.STL" />
       </geometry>
       <material
         name="">
@@ -40,7 +40,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/base_link.STL" />
+          filename="package://GC3.1/meshes/base_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -66,7 +66,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/wheel_link_1.STL" />
+          filename="package://GC3.1/meshes/wheel_link_1.STL" />
       </geometry>
       <material
         name="">
@@ -80,7 +80,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/wheel_link_1.STL" />
+          filename="package://GC3.1/meshes/wheel_link_1.STL" />
       </geometry>
     </collision>
   </link>
@@ -88,8 +88,8 @@
     name="wheel_1"
     type="revolute">
     <origin
-      xyz="0.2935 -0.18 0.08"
-      rpy="-1.5708 0 1.5708" />
+      xyz="0.2935 -0.18 0.0799999999999999"
+      rpy="-1.5707963267949 0 1.5707963267949" />
     <parent
       link="base_link" />
     <child
@@ -124,7 +124,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/wheel_link_2.STL" />
+          filename="package://GC3.1/meshes/wheel_link_2.STL" />
       </geometry>
       <material
         name="">
@@ -138,7 +138,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/wheel_link_2.STL" />
+          filename="package://GC3.1/meshes/wheel_link_2.STL" />
       </geometry>
     </collision>
   </link>
@@ -146,8 +146,8 @@
     name="wheel_2"
     type="revolute">
     <origin
-      xyz="0.2935 0.18 0.08"
-      rpy="-1.5708 0 1.5708" />
+      xyz="0.2935 0.18 0.0799999999999999"
+      rpy="-1.5707963267949 0 1.5707963267949" />
     <parent
       link="base_link" />
     <child
@@ -182,7 +182,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/wheel_link_3.STL" />
+          filename="package://GC3.1/meshes/wheel_link_3.STL" />
       </geometry>
       <material
         name="">
@@ -196,7 +196,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/wheel_link_3.STL" />
+          filename="package://GC3.1/meshes/wheel_link_3.STL" />
       </geometry>
     </collision>
   </link>
@@ -204,8 +204,8 @@
     name="wheel_3"
     type="revolute">
     <origin
-      xyz="-0.2935 -0.18 0.08"
-      rpy="-1.5708 0 1.5708" />
+      xyz="-0.2935 -0.18 0.0799999999999999"
+      rpy="-1.5707963267949 0 1.5707963267949" />
     <parent
       link="base_link" />
     <child
@@ -240,7 +240,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/wheel_link_4.STL" />
+          filename="package://GC3.1/meshes/wheel_link_4.STL" />
       </geometry>
       <material
         name="">
@@ -254,7 +254,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/wheel_link_4.STL" />
+          filename="package://GC3.1/meshes/wheel_link_4.STL" />
       </geometry>
     </collision>
   </link>
@@ -262,8 +262,8 @@
     name="wheel_4"
     type="revolute">
     <origin
-      xyz="-0.2935 0.18 0.08"
-      rpy="-1.5708 0 1.5708" />
+      xyz="-0.2935 0.18 0.0799999999999999"
+      rpy="-1.5707963267949 0 1.5707963267949" />
     <parent
       link="base_link" />
     <child
@@ -280,16 +280,16 @@
     name="line_link">
     <inertial>
       <origin
-        xyz="-6.93889390390723E-18 1.38777878078145E-17 -0.138220449708882"
+        xyz="6.24500451351651E-17 5.55111512312578E-17 -0.0434999999998822"
         rpy="0 0 0" />
       <mass
         value="1.09949619073592" />
       <inertia
         ixx="0.0035366386494099"
-        ixy="-7.00173431439187E-19"
-        ixz="-7.88794955279095E-20"
+        ixy="-6.14340759450751E-19"
+        ixz="-7.2280144832367E-20"
         iyy="0.0013181386494099"
-        iyz="7.86046575051991E-20"
+        iyz="-7.2280144832367E-20"
         izz="0.00346776285420644" />
     </inertial>
     <visual>
@@ -298,7 +298,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/line_link.STL" />
+          filename="package://GC3.1/meshes/line_link.STL" />
       </geometry>
       <material
         name="">
@@ -312,7 +312,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/line_link.STL" />
+          filename="package://GC3.1/meshes/line_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -320,8 +320,8 @@
     name="line"
     type="prismatic">
     <origin
-      xyz="0.0525 0.106 0.216"
-      rpy="3.1416 0 0" />
+      xyz="0.0524999999999999 0.106 0.216"
+      rpy="3.14159265358979 0 0" />
     <parent
       link="base_link" />
     <child
@@ -329,8 +329,8 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      lower="-1"
-      upper="1"
+      lower="0"
+      upper="0.38"
       effort="0"
       velocity="0" />
   </joint>
@@ -338,16 +338,16 @@
     name="link_1">
     <inertial>
       <origin
-        xyz="0.0988134508022116 -0.0447821238375509 0.00818462866097147"
+        xyz="0.0699746284045319 0.0829040894919596 0.00818462866097153"
         rpy="0 0 0" />
       <mass
         value="0.298000879113616" />
       <inertia
-        ixx="0.000332255250439969"
-        ixy="0.000504848132945933"
-        ixz="4.06573597239539E-05"
-        iyy="0.00121742526011606"
-        iyz="-1.84258610875798E-05"
+        ixx="0.000887595684206338"
+        ixy="-0.000661845402714015"
+        ixz="2.87914612382839E-05"
+        iyy="0.000662084826349691"
+        iyz="3.41113619825736E-05"
         izz="0.00150941735277171" />
     </inertial>
     <visual>
@@ -356,7 +356,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_1.STL" />
+          filename="package://GC3.1/meshes/link_1.STL" />
       </geometry>
       <material
         name="">
@@ -370,7 +370,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_1.STL" />
+          filename="package://GC3.1/meshes/link_1.STL" />
       </geometry>
     </collision>
   </link>
@@ -378,7 +378,7 @@
     name="J1"
     type="revolute">
     <origin
-      xyz="0 0 -0.20172"
+      xyz="0 0 -0.106999999999882"
       rpy="0 0 0" />
     <parent
       link="line_link" />
@@ -387,8 +387,8 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
+      lower="-0.52"
+      upper="1.91"
       effort="0"
       velocity="0" />
   </joint>
@@ -396,17 +396,17 @@
     name="link_2">
     <inertial>
       <origin
-        xyz="-0.0109573674942894 0.0106588447738483 5.55111512312578E-17"
+        xyz="0.000101291482748511 0.015286092187136 8.88178419700125E-16"
         rpy="0 0 0" />
       <mass
-        value="0.58398682899762" />
+        value="0.583986828997619" />
       <inertia
-        ixx="0.00101900142131788"
-        ixy="0.000657519336759442"
-        ixz="-5.6615643820121E-19"
-        iyy="0.00105533006227943"
-        iyz="7.6878984917057E-19"
-        izz="0.00163912949589206" />
+        ixx="0.00169487816875989"
+        ixy="-8.71689003396192E-06"
+        ixz="-3.31818450803798E-20"
+        iyy="0.000379453314837419"
+        iyz="-4.51726124075939E-19"
+        izz="0.00163912949589205" />
     </inertial>
     <visual>
       <origin
@@ -414,7 +414,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_2.STL" />
+          filename="package://GC3.1/meshes/link_2.STL" />
       </geometry>
       <material
         name="">
@@ -428,7 +428,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_2.STL" />
+          filename="package://GC3.1/meshes/link_2.STL" />
       </geometry>
     </collision>
   </link>
@@ -436,8 +436,8 @@
     name="J2"
     type="revolute">
     <origin
-      xyz="0.17397 -0.078842 -0.0545"
-      rpy="-3.1416 0 0" />
+      xyz="0.1232 0.14596 -0.0545"
+      rpy="3.1416 0 0" />
     <parent
       link="link_1" />
     <child
@@ -445,8 +445,8 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
+      lower="-0.52"
+      upper="2.61"
       effort="0"
       velocity="0" />
   </joint>
@@ -454,17 +454,17 @@
     name="link_3">
     <inertial>
       <origin
-        xyz="-8.08850694750674E-05 -7.7894728112593E-05 -0.0351943560446614"
+        xyz="-0.000112221467595153 -4.04046340157782E-06 -0.0351943560446648"
         rpy="0 0 0" />
       <mass
         value="0.222871773788512" />
       <inertia
-        ixx="0.000158222112432887"
-        ixy="-9.62941054290105E-06"
-        ixz="-2.03806831226102E-07"
-        iyy="0.000158947782628763"
-        iyz="-1.96272041412216E-07"
-        izz="0.000135435749225932" />
+        ixx="0.000148973654486171"
+        ixy="-6.92995470278619E-07"
+        ixz="-2.82765433133498E-07"
+        iyy="0.000168196240575477"
+        iyz="-1.01807916911651E-08"
+        izz="0.000135435749225931" />
     </inertial>
     <visual>
       <origin
@@ -472,7 +472,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_3.STL" />
+          filename="package://GC3.1/meshes/link_3.STL" />
       </geometry>
       <material
         name="">
@@ -486,7 +486,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_3.STL" />
+          filename="package://GC3.1/meshes/link_3.STL" />
       </geometry>
     </collision>
   </link>
@@ -494,8 +494,8 @@
     name="J3"
     type="revolute">
     <origin
-      xyz="-0.070964 0.06903 0"
-      rpy="1.5708 0 0.79921" />
+      xyz="0.000655997394275049 0.0989978265792674 0"
+      rpy="1.5707963267949 0 -0.00662628479646784" />
     <parent
       link="link_2" />
     <child
@@ -512,17 +512,17 @@
     name="link_4">
     <inertial>
       <origin
-        xyz="0.0145254511747708 0.0509366550277066 2.44249065417534E-15"
+        xyz="0.00927688316747438 0.0521485474000727 -9.68669588985449E-15"
         rpy="0 0 0" />
       <mass
-        value="0.263988174644702" />
+        value="0.263988174644703" />
       <inertia
-        ixx="0.000251042200733505"
-        ixy="-6.28957453331269E-06"
-        ixz="-1.14518854468781E-18"
-        iyy="0.000230780017994041"
-        iyz="-1.68051336735253E-18"
-        izz="0.000164335442331243" />
+        ixx="0.000252104193590036"
+        ixy="-4.11249628033574E-06"
+        ixz="1.11239248776131E-19"
+        iyy="0.000229718025137513"
+        iyz="4.7857361519868E-20"
+        izz="0.000164335442331244" />
     </inertial>
     <visual>
       <origin
@@ -530,7 +530,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_4.STL" />
+          filename="package://GC3.1/meshes/link_4.STL" />
       </geometry>
       <material
         name="">
@@ -544,7 +544,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_4.STL" />
+          filename="package://GC3.1/meshes/link_4.STL" />
       </geometry>
     </collision>
   </link>
@@ -552,8 +552,8 @@
     name="J4"
     type="revolute">
     <origin
-      xyz="-0.00036015 -0.00034683 -0.0465"
-      rpy="-1.5708 -0.97721 -0.80423" />
+      xyz="-0.000499676236049573 -1.79905288163473E-05 -0.0465000000000025"
+      rpy="-1.5707963267949 0.182122404429995 -1.53480750090966" />
     <parent
       link="link_3" />
     <child
@@ -561,8 +561,8 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
+      lower="0"
+      upper="1.57"
       effort="0"
       velocity="0" />
   </joint>
@@ -570,17 +570,17 @@
     name="link_5">
     <inertial>
       <origin
-        xyz="-0.0390702836671196 -0.0247827911731201 -0.0326248381080529"
+        xyz="0.0461756846205636 0.00291203605391455 -0.0326248381080221"
         rpy="0 0 0" />
       <mass
         value="0.168966963377511" />
       <inertia
-        ixx="0.000150935927093023"
-        ixy="-8.52641456140403E-05"
-        ixz="-5.1988567861547E-05"
-        iyy="0.000231271425707225"
-        iyz="-3.29770275455541E-05"
-        izz="0.000264912746004825" />
+        ixx="9.75984952536745E-05"
+        ixy="-1.18407647751363E-05"
+        ixz="6.14433141541748E-05"
+        iyy="0.000284608857546573"
+        iyz="3.8748780350216E-06"
+        izz="0.000264912746004824" />
     </inertial>
     <visual>
       <origin
@@ -588,7 +588,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_5.STL" />
+          filename="package://GC3.1/meshes/link_5.STL" />
       </geometry>
       <material
         name="">
@@ -602,7 +602,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_5.STL" />
+          filename="package://GC3.1/meshes/link_5.STL" />
       </geometry>
     </collision>
   </link>
@@ -610,8 +610,8 @@
     name="J5"
     type="revolute">
     <origin
-      xyz="0.022761 0.079818 0"
-      rpy="1.5708 -0.54333 -0.27779" />
+      xyz="0.0145369266962608 0.0817170591873439 0"
+      rpy="1.57079632679489 -1.53476796314872 -0.176051717388886" />
     <parent
       link="link_4" />
     <child
@@ -619,8 +619,8 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
+      lower="-1.39"
+      upper="4.36"
       effort="0"
       velocity="0" />
   </joint>
@@ -628,17 +628,17 @@
     name="link_6">
     <inertial>
       <origin
-        xyz="-0.00603573649752309 -0.0374189311950067 0.0430000651872199"
+        xyz="0.0064690236045567 0.0373464632938137 0.0430000009531121"
         rpy="0 0 0" />
       <mass
-        value="0.349895945126719" />
+        value="0.349895945589167" />
       <inertia
-        ixx="0.000635323785149574"
-        ixy="-5.30596149886004E-05"
-        ixz="-3.11865105442866E-10"
-        iyy="0.000314934238586777"
-        iyz="-1.4557554633461E-10"
-        izz="0.000453558074073961" />
+        ixx="0.000634050858329448"
+        ixy="-5.67586390606414E-05"
+        ixz="2.98694711241486E-10"
+        iyy="0.000316207190836963"
+        iyz="1.10458735136122E-10"
+        izz="0.000453558086295815" />
     </inertial>
     <visual>
       <origin
@@ -646,7 +646,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_6.STL" />
+          filename="package://GC3.1/meshes/link_6.STL" />
       </geometry>
       <material
         name="">
@@ -660,7 +660,7 @@
         rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="package://rm26_engineer_description/meshes/link_6.STL" />
+          filename="package://GC3.1/meshes/link_6.STL" />
       </geometry>
     </collision>
   </link>
@@ -668,8 +668,8 @@
     name="J6"
     type="revolute">
     <origin
-      xyz="0.036311 0.023033 -0.0405"
-      rpy="1.5708 0.4276 -1.0055" />
+      xyz="-0.0429147465036577 -0.00270638735710615 -0.040500000000001"
+      rpy="-1.5707963267949 0.101460063365565 -1.50781545764258" />
     <parent
       link="link_5" />
     <child
@@ -677,8 +677,8 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
+      lower="-1.57"
+      upper="1.57"
       effort="0"
       velocity="0" />
   </joint>
