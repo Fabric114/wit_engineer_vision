@@ -10,7 +10,12 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
     ],
-    install_requires=["setuptools", "numpy", "scipy"],
+    # 包内数据: 规划配置真值 + 碰撞网格资产 (importlib.resources 按包内路径读取)
+    package_data={package_name: ["config/*.yaml", "assets/collision/*.obj"]},
+    include_package_data=True,
+    # numpy/scipy 为硬依赖; OMPL(type2) 与 hpp-fcl(collision) 是系统级可选依赖,
+    # 不经 pip 安装, 未装时仅这两个模块不可用, 其余运动学/type3 正常。
+    install_requires=["setuptools", "numpy", "scipy", "pyyaml"],
     zip_safe=True,
     maintainer="sxh",
     maintainer_email="shaozi2233@gmail.com",

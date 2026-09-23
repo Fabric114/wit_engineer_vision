@@ -9,7 +9,11 @@
 
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <exec_depend>task</exec_depend>
+  <!-- 运动学已随本次移植并入 planning 自身 (仓库暂无 task 包), 故不再 depend task。
+       numpy/scipy 为硬依赖; OMPL 与 hpp-fcl 是系统级可选后端, 不走 rosdep。 -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
