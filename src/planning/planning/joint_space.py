@@ -1,3 +1,19 @@
+"""joint_space.py — 关节空间 (限位与角度处理)。
+
+【这个文件干什么】
+描述"每个关节能转到哪", 并做三件事:
+  1. normalize: 把一组关节角规整到合法范围, 并返回是否越限。
+  2. 连续关节处理: 有些关节能无限旋转 (continuous joint), 把它的角度
+     折到 [-pi, pi]; 配置文件里这种关节的 lower/upper 写成 null。
+  3. align_trajectory: 让相邻轨迹点的连续关节角"就近"衔接, 避免出现
+     从 +179° 跳到 -179° 这种物理上没动、数值上跳一圈的假跳变。
+
+【要懂的概念】
+- 6 轴机械臂有 6 个关节, 每个关节有自己的转动范围 (关节限位)。
+  规划出来的每一个路点都必须落在这些范围内, 否则臂根本转不到。
+- 限位是这台臂的物理属性 -> 换臂要按真实臂改配置里的 joint_limits。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

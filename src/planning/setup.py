@@ -22,5 +22,10 @@ setup(
     description="纯算法库: 碰撞检测 / 关节路径 (OMPL) / 装配流形约束",
     license="MIT",
     tests_require=["pytest"],
-    entry_points={"console_scripts": []},
+    entry_points={
+        "console_scripts": [
+            # 薄 ROS 节点; 库本体 (planning/*.py 其余文件) 保持零 ROS 依赖
+            "planning_node = planning.planning_node:main",
+        ],
+    },
 )

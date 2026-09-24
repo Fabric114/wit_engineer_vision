@@ -1,4 +1,24 @@
-"""Capsule-to-mesh collision checking for batches of arm joint states."""
+"""collision.py — 碰撞检测 (可选, 依赖 hpp-fcl + 站体网格)。
+
+【这个文件干什么】
+判断某个关节配置下, 机械臂会不会撞到兑换站/自身。 做法: 把臂的每一段近似
+成一根"胶囊" (一条线段 + 一个半径, 像加粗的骨架), 把兑换站/场地用三角网格
+表示, 再用 hpp-fcl 几何库算它们之间的最近距离 / 是否相交。 规划器用它来
+过滤掉危险配置 (check_configs), 或给"离得太近"加惩罚 (check_configs_with_penalty)。
+
+【要懂的概念】
+- 规划不光要能到达目标, 还要一路不撞东西。 碰撞检测就是给规划器一个
+  "这个姿势安不安全"的判据。
+- 胶囊是碰撞检测里最常用的臂几何近似: 算距离快、比包围盒贴身。
+
+【本项目现状 —— 重要】
+- 碰撞是可选的: type2 和 type3 都接受 collision_checker=None, 先不开也能跑通。
+- 要开碰撞, 需要两样本仓库暂时没有的东西:
+    1) 兑换站的碰撞网格 .obj 资产 (放到 planning/assets/collision/);
+    2) 臂各段胶囊参数 (config 里的 collision.arm.capsules), 也要按你这台臂改。
+- 依赖 hpp-fcl (系统级)。 本机环境已统一到 numpy 1.24.4, hpp-fcl 可正常导入使用
+  (别把 numpy 升到 2.x, 否则会段错误; 详见 README 环境说明)。
+"""
 
 from __future__ import annotations
 

@@ -3,17 +3,23 @@
 <package format="3">
   <name>planning</name>
   <version>0.0.1</version>
-  <description>纯算法库 (NumPy, 零 ROS): 碰撞检测 / 关节路径 (OMPL) / 装配流形约束, 供 arm_host/planning_node 调用</description>
+  <description>纯算法库 (NumPy, 零 ROS): 碰撞检测 / 关节路径 (OMPL) / 装配流形约束, 外加薄 ROS 层 planning_node</description>
   <maintainer email="shaozi2233@gmail.com">sxh</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <!-- 运动学已随本次移植并入 planning 自身 (仓库暂无 task 包), 故不再 depend task。
-       numpy/scipy 为硬依赖; OMPL 与 hpp-fcl 是系统级可选后端, 不走 rosdep。 -->
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-scipy</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+
+  <!-- 以下仅 planning_node.py (薄 ROS 层) 需要; 算法库本体不依赖 ROS -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>interfaces</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

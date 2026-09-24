@@ -1,13 +1,16 @@
-"""planning 移植冒烟测试: 验证导入链、FK/IK 往返、type3 全流程可跑通。
+"""planning 移植冒烟测试: 验证导入链、FK、type3 全流程可跑通。
 
-注意: 这里用的是包内 planning.example.yaml (仍是参考臂的 DH), 只验证代码通路,
-不代表本仓库 rm26_arm 的运动学正确 —— DH 换成新臂后这些数值断言需重定。
+config/planning.example.yaml 的 arm.dh 已换成 rm26_arm 的实测 DH。 DH 的数值正确性
+由 test_dh_mujoco.py 拿 MuJoCo 回代验证; 本文件只验证代码通路与结构性结论。
+rm26_arm 是偏置腕 (非球腕), 解析 solve_ik 不适用 —— 见 README 第六节; config 里
+arm.use_analytic_ik=false 时 solve_ik 自动走数值兜底, 正逆解算往返仍能闭环。
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 from planning import ArmModel, Type3Planner, load_config
 from planning.type3 import AssemblyPath, AssemblyState, Type3PlanResult
@@ -36,25 +39,35 @@ def test_forward_kinematics_shape(arm: ArmModel):
     np.testing.assert_allclose(fk.tcp_transforms[0, 3], [0, 0, 0, 1], atol=1e-9)
 
 
-def test_ik_round_trip(arm: ArmModel):
-    """FK(q) -> solve_ik 至少有一个有效分支能复现该 TCP 位姿。"""
+def test_ik_round_trip_numeric(arm: ArmModel):
+    """正逆解算往返: FK 得目标位姿 -> solve_ik 反解关节角 -> 再 FK 应复现同一位姿。
+
+    rm26_arm 是偏置腕 (后三轴不汇交), 解析 IK 的球腕假设不成立; config 里
+    ``arm.use_analytic_ik=false`` 时 solve_ik 自动退化为数值解 (scipy least_squares,
+    README 第六节 6.3 迁移路线)。 本测试验证这条数值通路能把位姿解回来。
+    """
     q = np.array([0.3, 0.8, 1.0, 0.2, 0.3, 0.1], dtype=float)
     target = arm.forward_kinematics(q[None, :]).tcp_transforms  # (1,4,4)
 
-    joints, valid = arm.solve_ik(target, branches=list(range(8)))
-    assert joints.shape == (1, 8, 6)
-    assert bool(valid.any()), "解析 IK 未返回任何有效分支"
+    # 请求 4 个分支 (不同初值撒开), 只要有一个既有效又能复现即算往返成功。
+    joints, valid = arm.solve_ik(target, branches=list(range(4)))
+    assert joints.shape == (1, 4, 6)
+    assert valid[0].any(), "数值 IK 未能解出任何有效关节角"
 
-    # 有效分支的 FK 应复现目标 TCP
-    matched = False
-    for k in range(8):
+    reproduced = False
+    for k in range(4):
         if not valid[0, k]:
             continue
         fk = arm.forward_kinematics(joints[0, k][None, :]).tcp_transforms[0]
-        if np.allclose(fk, target[0], atol=1e-3):
-            matched = True
+        position_ok = np.linalg.norm(fk[:3, 3] - target[0][:3, 3]) < 1e-4
+        rotation_ok = (
+            np.linalg.norm(Rotation.from_matrix(target[0][:3, :3].T @ fk[:3, :3]).as_rotvec())
+            < 1e-3
+        )
+        if position_ok and rotation_ok:
+            reproduced = True
             break
-    assert matched, "没有有效分支能复现目标 TCP 位姿"
+    assert reproduced, "数值 IK 解出的关节角未能复现目标位姿 (正逆解算未闭环)"
 
 
 def _make_planner(arm: ArmModel, config: dict) -> Type3Planner:

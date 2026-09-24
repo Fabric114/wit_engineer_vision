@@ -1,3 +1,30 @@
+"""type3.py — 装配段规划: 约束流形上的插入轨迹 (本库最复杂的一块)。
+
+【这个文件干什么】
+插入/装配阶段, 末端不能像接近段那样自由乱走, 必须贴着兑换站定义的"装配
+流形"运动 —— 也就是只允许 沿轴向进给 / 滑动 / 两个方向的小旋转 这几种受约束
+的动作。 本文件负责把这样一段装配动作规划成一条可执行的关节轨迹。
+
+【它的整体流程 (读懂这 5 步就懂了 type3)】
+  1. 把装配动作离散成一串任务空间位姿 (AssemblyState -> 末端目标位姿序列);
+  2. 对每个位姿, 绕插入轴在一圈 roll 角上采样, 每个 roll 用解析 IK 解出候选
+     关节配置 (这就形成了 viterbi.py 里说的"分层网格": 层=路径点, 节点=候选);
+  3. (可选) 用碰撞检测给每个候选打分/过滤;
+  4. 用 Viterbi 在这些候选里选出一条平滑、代价最小的关节序列;
+  5. 若严格解不出来, 用 scipy 最小二乘 (least_squares) "尽力修复", 找一个
+     尽量满足约束的近似解。
+  最后再做时间参数化 (trajectory.py) 就得到可执行轨迹。
+
+【要懂的概念】
+- AssemblyState: 描述"装到哪一步"的物理坐标 (轴向偏移/滑动/两个旋转/释放),
+  AssemblyPath 就是这些状态的有序序列 (.between() 可在两个状态间线性取样)。
+- station_transform: 兑换站相对 arm_base 的 4x4 位姿 —— 正常由视觉给出;
+  你们没相机时, 从仿真里直接读 ground truth 得到 (见 README)。
+
+【依赖】 arm_model (IK) + viterbi + scipy。 几何参数 (r_p/r_q/phi 等) 在
+config 的 planning.type3.exchange_trajectory 里, 是兑换站的装配尺寸, 需按实物核对。
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
