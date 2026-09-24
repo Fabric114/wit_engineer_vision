@@ -1,55 +1,61 @@
-<!-- 占位场景: 6 轴串联臂 + 地面 + 兑换站占位块.
-     用你机器人的真实 URDF/MJCF 替换. 关节数、link 尺寸、惯量均为占位. -->
-<mujoco model="engineer_scene">
-  <compiler angle="radian" autolimits="true"/>
-  <option timestep="0.002" gravity="0 0 -9.81"/>
+<!-- rm26 工程机器人仿真场景.
+     地面 / 灯光 / 相机都在 rm26_arm.xml 里自带, 这里只补三样:
+       1. 兑换站占位 (仅可视, 位姿由 sim_node 启动时按 FK 覆写, 见 doc/ 的设计 §六);
+       2. 把底盘焊在世界系 (不焊 3 秒漂 226 mm, arm_base 系就废了);
+       3. 一个 compiler 覆盖, 解 include 的 mesh 路径 (见下面注释).
+     ⚠️ rm26_engineer_description/rm26_arm.xml 不要改 —— planning 的
+        test/test_dh_mujoco.py 依赖它能独立加载. -->
+<mujoco model="rm26_engineer_scene">
+
+  <include file="rm26_engineer_description/rm26_arm.xml"/>
 
   <worldbody>
-    <light pos="0 0 3" dir="0 0 -1"/>
-    <geom name="floor" type="plane" size="3 3 0.1" rgba="0.8 0.8 0.8 1"/>
-
-    <!-- ===== 6 轴机械臂 (占位链, 每节 0.2m) ===== -->
-    <body name="base" pos="0 0 0.1">
-      <geom type="cylinder" size="0.05 0.05" rgba="0.3 0.3 0.3 1"/>
-      <body name="l1" pos="0 0 0.05">
-        <joint name="j1" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
-        <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.03"/>
-        <body name="l2" pos="0 0 0.2">
-          <joint name="j2" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
-          <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.03"/>
-          <body name="l3" pos="0 0 0.2">
-            <joint name="j3" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
-            <geom type="capsule" fromto="0 0 0 0 0 0.2" size="0.025"/>
-            <body name="l4" pos="0 0 0.2">
-              <joint name="j4" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
-              <geom type="capsule" fromto="0 0 0 0 0 0.15" size="0.02"/>
-              <body name="l5" pos="0 0 0.15">
-                <joint name="j5" type="hinge" axis="0 1 0" range="-3.14 3.14"/>
-                <geom type="capsule" fromto="0 0 0 0 0 0.1" size="0.02"/>
-                <body name="l6" pos="0 0 0.1">
-                  <joint name="j6" type="hinge" axis="0 0 1" range="-3.14 3.14"/>
-                  <geom name="tcp" type="box" size="0.03 0.03 0.02" rgba="0.9 0.2 0.2 1"/>
-                  <site name="tcp_site" pos="0 0 0.02"/>
-                </body>
-              </body>
-            </body>
-          </body>
-        </body>
-      </body>
-    </body>
-
-    <!-- ===== 兑换站占位 (能量单元装配目标) ===== -->
-    <body name="exchange_station" pos="0.6 0 0.3">
-      <geom type="box" size="0.14 0.14 0.14" rgba="0.2 0.4 0.9 0.6"/>
+    <!-- 兑换站: pos/quat 是占位, sim_node 会写 model.body_pos/body_quat.
+         class="visualgeom" => contype=0 conaffinity=0, 不参与接触.
+         本轮 planning 的碰撞检测是关的, 轨迹可能穿过站体; 让它不碰,
+         画面才不会出现"臂顶着站体抽搐". 等碰撞资产补齐再换实体几何. -->
+    <body name="exchange_station" pos="0.5 0 0.6" quat="1 0 0 0">
+      <geom name="station_box" class="visualgeom" type="box" size="0.10 0.10 0.02"
+            rgba="0.95 0.70 0.15 0.9"/>
+      <site name="station_site" pos="0 0 0" size="0.008" rgba="1 0 0 1"/>
+      <site name="station_axis" pos="0 0 0.05" size="0.004 0.05" type="cylinder"
+            rgba="1 0 0 0.6"/>
     </body>
   </worldbody>
 
-  <actuator>
-    <position joint="j1" kp="50"/>
-    <position joint="j2" kp="50"/>
-    <position joint="j3" kp="50"/>
-    <position joint="j4" kp="30"/>
-    <position joint="j5" kp="30"/>
-    <position joint="j6" kp="20"/>
-  </actuator>
+  <!-- ⚠️ 必须排除"底盘 <-> 臂各节"的接触.
+       MuJoCo 拿 mesh 的**凸包**做碰撞, base_link.obj 的凸包是个大盒子,
+       把整条臂的活动区都包进去了 —— 实测每个 link 都和底盘"侵入" 13~164 mm,
+       约束力和 PD 对着干, J1 被顶在 0.171 rad 上不去 (目标 0.4, 差 13°).
+       root 与 link_1 不是父子关系 (中间还有 line_link), MuJoCo 不会自动排除,
+       所以得在这里手写. line_link <-> link_1 是父子, MuJoCo 自动排除. -->
+  <contact>
+    <exclude body1="root" body2="link_1"/>
+    <exclude body1="root" body2="link_2"/>
+    <exclude body1="root" body2="link_3"/>
+    <exclude body1="root" body2="link_4"/>
+    <exclude body1="root" body2="link_5"/>
+    <exclude body1="root" body2="link_6"/>
+    <exclude body1="line_link" body2="link_2"/>
+    <exclude body1="line_link" body2="link_3"/>
+    <exclude body1="line_link" body2="link_4"/>
+    <exclude body1="line_link" body2="link_5"/>
+    <exclude body1="line_link" body2="link_6"/>
+  </contact>
+
+  <!-- 底盘固定: weld equality 比"每步硬写回 qpos[:7]"好 ——
+       实测 root 漂移 5 µm, 且保留了臂对底盘的反作用力,
+       硬写回会把关节稳态误差从 0.03° 抬到 0.45°. -->
+  <equality>
+    <weld name="chassis_pin" body1="root" solref="0.0002 1"/>
+  </equality>
+
+  <!-- ⚠️ 必须放在 include 之后, 且必须带 strippath:
+       MuJoCo 会把"被 include 文件所在子目录"拼到 mesh file 前面, 而
+       rm26_arm.xml 自带 meshdir="meshes", 于是路径被拼成
+       meshes/rm26_engineer_description/base_link.obj -> 加载失败.
+       strippath 丢掉 file 里的路径只留文件名, 再由这里的 meshdir 补全. -->
+  <compiler angle="radian" eulerseq="zyx" autolimits="true"
+            strippath="true" meshdir="rm26_engineer_description/meshes"/>
+
 </mujoco>

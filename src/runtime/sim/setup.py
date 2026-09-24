@@ -11,6 +11,11 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/model", glob("model/*.xml")),
+        # scene.xml 会 include 描述文件, 描述文件又引 mesh, 三者都得装进 share
+        ("share/" + package_name + "/model/rm26_engineer_description",
+         glob("model/rm26_engineer_description/*.xml")),
+        ("share/" + package_name + "/model/rm26_engineer_description/meshes",
+         glob("model/rm26_engineer_description/meshes/*")),
     ],
     install_requires=["setuptools", "mujoco", "numpy"],
     zip_safe=True,
