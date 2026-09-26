@@ -60,8 +60,8 @@ class ArmPlugin(SimPlugin):
         self._tau_max = float(cfg.get("tau_max", 50.0))
 
         # 目标值一律按 MJCF 的 range 夹 —— 以模型为准。
-        # (config/planning.example.yaml 里的 arm.joint_limits 目前还是参考臂的,
-        #  与 MJCF 不一致, 见设计文档 §十一)
+        # (planning 配置的 arm.joint_limits 已按同一份 URDF/MJCF 填好, 两边数值一致;
+        #  这里仍然夹一次, 保证模型是最后一道关)
         self.lo = self._lo = np.array([ctx.model.jnt_range[j, 0] for j in self._jids])
         self.hi = self._hi = np.array([ctx.model.jnt_range[j, 1] for j in self._jids])
 

@@ -25,8 +25,8 @@ arm:
   kd: null                          # null = kp * 0.1
   tau_max: 50.0                     # 力矩饱和, 防数值炸
   # 启动 qpos。 注意 MJCF 里 J4 的 range 是 [0, 1.57], 0 正好贴着下限,
-  # 所以 home 别用全 0。 这组同时落在 MJCF range 与 planning 配置的
-  # joint_limits 之内 (两者目前不一致, 见设计文档 §十一)。
+  # 所以 home 别用全 0。 planning 的 joint_limits 现在与 MJCF range 取同一组数,
+  # 这组落在两边之内。
   home: [0.0, 0.3, 0.5, 0.5, 0.3, 0.0]
 
 gripper:

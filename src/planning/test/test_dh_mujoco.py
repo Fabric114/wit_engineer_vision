@@ -251,6 +251,34 @@ def test_config_dh_matches_mujoco(_mujoco):
     assert max_rot < 0.1, f"最大姿态误差 {max_rot:.5f}° 过大 -> config 的 DH 可能填错"
 
 
+def test_config_joint_limits_match_mujoco(_mujoco):
+    """config 的 arm.joint_limits 应逐轴等于 MJCF 的 jnt_range, 且不含连续关节。
+
+    为什么要卡死这一条:
+      - 配置比 MJCF 宽 -> 规划出的点会被 arm_plugin 按模型悄悄夹掉, 轨迹跟不上;
+      - 配置比 MJCF 窄 -> 白丢可行解;
+      - 写成 null (连续关节) -> joint_space 会把该轴折到 [-pi, pi] 并允许整圈
+        unwrap 衔接, 规划器以为能绕过去, 实际会撞机械死点。 本臂 6 轴在 URDF 里
+        都是 revolute、在 MJCF 里都是 limited="true", 一个连续关节都没有。
+    """
+    mjcf = _find_mjcf()
+    if mjcf is None:
+        pytest.skip("找不到 rm26_arm.xml, 设 RM26_MJCF 后再跑")
+
+    model = _mujoco.MjModel.from_xml_path(str(mjcf))
+    jids = [_mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_JOINT, f"J{k}") for k in range(1, 7)]
+    lo = np.array([model.jnt_range[j, 0] for j in jids])
+    hi = np.array([model.jnt_range[j, 1] for j in jids])
+
+    space = ArmModel.from_config(load_config()["arm"]).joint_space
+    assert space.dof == 6, f"joint_limits 长度应为 6, 实际 {space.dof}"
+    assert not space.continuous.any(), (
+        f"本臂没有连续关节, joint_limits 里不该出现 null: continuous={space.continuous}"
+    )
+    assert np.allclose(space.lower, lo, atol=1e-9), f"lower 与 MJCF 不一致: {space.lower} vs {lo}"
+    assert np.allclose(space.upper, hi, atol=1e-9), f"upper 与 MJCF 不一致: {space.upper} vs {hi}"
+
+
 if __name__ == "__main__":
     mp, mr, _, _ = _run_check(n_samples=5000, seed=0, verbose=True)
     ok = mp < 1e-3 and mr < 0.1

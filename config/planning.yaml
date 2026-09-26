@@ -1,33 +1,27 @@
-# planning 包自带的示例配置 (数据驱动真值)。
-#
-# 【重要】其中 arm.dh / joint_limits / dynamics / tool 以及 collision 几何,
-# 目前仍是参考项目 RM2026-Engineer-Assembly-Algorithm 那台臂的参数,
-# 不是本仓库新 MJCF (rm26_arm) 的参数。FK/IK 要对本机器人成立,
-# 必须按 rm26_arm 的 URDF/MJCF 重新标定 DH、限位、工具偏置后覆盖这里。
+
+#   - arm.dynamics  —— 本仓库不做动力学控制 (sim 的重力补偿用 MuJoCo 自己的
+#     qfrc_bias), 这段目前没人读, 要么按 rm26_arm 重标, 要么直接删。
+#   - arm.tool.tcp_offset_6_tcp —— 真夹爪不在 URDF/MJCF 里, 现值是按腕部安装面
+#     推的过渡值, 装上夹爪后必须实测覆盖 (它一动, 所有 IK 目标跟着平移)。
 # planning.* / type3.* 的规划超参可直接沿用。
-#
 # 感知 (perception / keypoint_schemas) 一律不放这里, 归 solver/detector/tf 包,
 # 保持"一处一个真值"。
 
 arm:
   # 是否用解析 IK:
-  #   true  -> 用 arm_model 的解析 IK (一次向量化出 8 分支, 极快, 但只对"球腕"成立);
-  #   false -> 自动退化成数值 IK (scipy least_squares 逐个解, 通用, 慢一些)。
-  # rm26_arm 是"偏置腕"(后三轴不汇交, 见 README 第六节), 球腕假设不成立,
-  # 故先置 false, 走数值兜底。 换成真球腕的臂再改回 true。
+  # true  -> 用 arm_model 的解析 IK (一次向量化出 8 分支, 极快, 但只对"球腕"成立);
+  # false -> 自动退化成数值 IK (scipy least_squares 逐个解, 通用, 慢一些)。
   use_analytic_ik: false
 
   dh:
-    # ===== 旧: 参考臂 RM2026-Engineer-Assembly-Algorithm 的 DH, 已停用, 保留备查 =====
+    #参考臂
     # alpha: [0.0, -1.5707963267948966, 3.141592653589793, -1.5707963267948966, 1.5707963267948966, -1.5707963267948966]
     # a: [0.0, 0.0, 0.38, 0.0, 0.0, 0.0]
     # d: [0.0, 0.0, 0.0, 0.4345, 0.0, 0.0]
     # theta_offset: [0.0, -2.7525588, 1.7870426, -3.141592653589793, 0.0, 0.0]
-    # ==============================================================================
-    #
-    # 新: rm26_arm 的 Modified(Craig)-DH。 从 rm26_arm.urdf 逐关节推导,
+
     # 并用 test/test_dh_mujoco.py 拿 MuJoCo(rm26_arm.xml) 回代验证 (全位姿 <=mm/毫度级)。
-    # 约定: T_i = Rotx(alpha_i)·Transx(a_i)·Rotz(theta_i)·Transz(d_i);
+    # T_i = Rotx(alpha_i)·Transx(a_i)·Rotz(theta_i)·Transz(d_i);
     # base(arm_base) 取在 J1 转轴上; 关节符号与 URDF/MJCF 一致, joint_limits 可直接照搬。
     alpha:        [0.0, -3.141592653589793, 1.5707963267948966, 1.5707963267948966, 1.5707963267948966, 1.5707963267948966]
     a:            [0.0, 0.191004, 0.0, 0.0, 0.0, 0.0]
@@ -35,11 +29,14 @@ arm:
     theta_offset: [0.0, -0.863131, -1.606785, 3.135522, 3.11464, 3.040133]
 
   tool:
-    tcp_offset_6_tcp: [0.03, 0.0, 0.12]
+    # tcp_offset_6_tcp: [0.03, 0.0, 0.12]
+    tcp_offset_6_tcp: [0.00253, -0.08154, -0.04380]
 
   joint_limits:
-    lower: [-3.141592653589793, 0.0, 0.0, null, -1.8326, null]
-    upper: [3.141592653589793, 2.2083, 2.3126, null, 1.8326, null]
+    # 来源: rm26_arm.urdf 的 <limit lower=/upper=> 与 rm26_arm.xml 的 joint range。
+    #        J1     J2     J3    J4    J5     J6
+    lower: [-0.52, -0.52, -3.14, 0.0, -1.39, -1.57]
+    upper: [ 1.91,  2.61,  3.14, 1.57,  4.36,  1.57]
 
   dynamics:
     - mass: 1.092
@@ -88,22 +85,64 @@ collision:
       - asset: exchange_column_collision.obj
 
   arm:
+    # 参考臂的三根胶囊 (cc_seg23 / cc_seg34 / cc_wrist_tcp) 已删除, 它们按 a=0.38、
+    # d=0.4345 那台臂标的, 套到 rm26_arm 上会既漏包又错位。
+    #
+    # 来源与算法: 由 rm26_engineer_description/meshes/link_i.obj 拟合, 见
+    # src/planning/test/test_arm_capsules.py —— 它既是黄金检查 (pytest 里复验包围性),
+    # 也是生成器 (`PYTHONPATH=. python3 test/test_arm_capsules.py` 重新打印本段)。
+    #   1. 把 link_i 的 mesh 顶点换算到 DH 第 i 系 (胶囊坐标就写在这个系里):
+    #      link_i -> DH_i = inv(FK(q=0).link_transforms[i]) @ inv(F0) @ A0[i],
+    #      F0/A0 取自 test_dh_mujoco (只用 URDF 几何, 不读本文件)。 q 任取一组即可:
+    #      mesh 和胶囊刚性固连在同一个 DH 系上, 一起转。
+    #   2. 在 x/y/z/PCA 四个轴向各拟合一根最紧胶囊 (半径 = 到轴线最大垂距, 两端按球帽
+    #      能覆盖的程度收紧), 取半径最小的; 轴对齐若不比最优差过 1 mm 就优先用轴对齐。
+    #   3. 半径向上取整到毫米, 再用取整后的值复验包围 —— 余量 +0.24 ~ +0.91 mm, 保守。
+    #
+    # 为什么一根连杆只给一根胶囊: 胶囊是凸的, 所以"所有顶点都在胶囊内"就证明整个三角面
+    # 都在胶囊内 (只查顶点即可)。 拆成多根确实能瘦身 —— link_6 沿 z 切在 -40.3 mm 分两根,
+    # 半径从 61.0 降到 43.6 mm —— 但胶囊的并集不是凸的, 顶点论证随之失效: 实测那个切法
+    # 顶点检查照样全过 (最大外露 +0.00 mm), 按重心坐标在三角面上撒 23040 点却查出 168 个
+    # 漏点、最深 +2.31 mm, 位置正在切面上 (有实料横跨切面, 顶点分属两边各自被覆盖)。
+    # 所以真要拆, 必须把验证一起换成面采样, 且面采样只是概率保证。 详见
+    # docs/2026-09-26-collision-capsule-tutorial.md 第 6.2 节。
+    #
+    # 代价: 6 根 (原来 3 根) 胶囊 -> 每次碰撞检查的 hpp-fcl 调用翻倍。 嫌慢就砍 frame 1
+    # (它贴着 base 基本不会撞外物), 别砍中间几根。
+    #
+    # 缺口: 真夹爪不在 URDF/MJCF 里, 没法从模型拟合。 装上夹爪后要按实测补一根
+    # frame 6 的胶囊 (名字里带 placeholder 的条目会被上面那个测试跳过)。
     capsules:
-      - name: cc_seg23
+      - name: cc_link1
+        frame: 1
+        from: [0.0, 0.0, -0.0034]
+        to: [0.191, 0.0, -0.0034]
+        radius: 0.035        # 轴向 x, 最紧 34.27 mm
+      - name: cc_link2
         frame: 2
-        from: [0.0, 0.0, 0.0643]
-        to: [0.38, 0.0, 0.0643]
-        radius: 0.03
-      - name: cc_seg34
+        from: [0.0, -0.0972, 0.0]
+        to: [0.0, 0.07, 0.0]
+        radius: 0.044        # 轴向 y, 最紧 43.66 mm
+      - name: cc_link3
         frame: 3
-        from: [0.0, 0.0, 0.0]
-        to: [0.0, 0.4345, 0.0]
-        radius: 0.03
-      - name: cc_wrist_tcp
+        from: [0.0, -0.0005, -0.0381]
+        to: [0.0, -0.0005, 0.0011]
+        radius: 0.043        # 轴向 z, 最紧 42.41 mm
+      - name: cc_link4
+        frame: 4
+        from: [0.0, -0.079, -0.0002]
+        to: [0.0, 0.0, -0.0002]
+        radius: 0.051        # 轴向 y, 最紧 50.62 mm
+      - name: cc_link5
+        frame: 5
+        from: [0.0, -0.0444, -0.0074]
+        to: [0.0, 0.0702, -0.0074]
+        radius: 0.041        # 轴向 y, 最紧 40.74 mm
+      - name: cc_link6
         frame: 6
-        from: [0.0, 0.0, 0.0]
-        to: [0.0, 0.0, 0.05]
-        radius: 0.015
+        from: [0.0015, -0.0858, -0.0422]
+        to: [0.0015, -0.0291, -0.0422]
+        radius: 0.062        # 轴向 y, 最紧 61.04 mm (横截面本来就粗, 6 根里最胖)
 
 planning:
   exchange:

@@ -65,10 +65,10 @@ __all__ = [
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """读取规划配置。
 
-    默认读**工作区根** ``config/planning.example.yaml`` (即 wit_engineer_vision/config/),
+    默认读**工作区根** ``config/planning.yaml`` (即 wit_engineer_vision/config/),
     与 camera/detector 等包一致 —— 全仓库配置集中一处, 一处一个真值。 向上查找同时含
     ``config/`` 与 ``src/`` 的工作区根 (源码运行/拷贝安装都能命中); 找不到 (如脱离
-    源码树的独立安装) 时退回包内自带的 ``config/planning.example.yaml`` 兜底。
+    源码树的独立安装) 时退回包内自带的 ``config/planning.yaml`` 兜底。
     也可显式传入外部 YAML 覆盖。
     """
     if path is not None:
@@ -79,11 +79,11 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
             (p for p in here.parents if (p / "config").is_dir() and (p / "src").is_dir()),
             None,
         )
-        workspace_config = root / "config" / "planning.example.yaml" if root is not None else None
+        workspace_config = root / "config" / "planning.yaml" if root is not None else None
         config_path = (
             workspace_config
             if workspace_config is not None and workspace_config.is_file()
-            else Path(str(files(__name__) / "config" / "planning.example.yaml"))
+            else Path(str(files(__name__) / "config" / "planning.yaml"))
         )
     if not config_path.is_file():
         raise FileNotFoundError(f"planning 配置文件不存在: {config_path}")
