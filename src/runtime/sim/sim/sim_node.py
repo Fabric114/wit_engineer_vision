@@ -29,6 +29,8 @@ import mujoco
 
 from sim.mujoco_engine import MujocoEngine
 from sim.plugins.arm_plugin import ArmPlugin
+from sim.plugins.column_plugin import ColumnPlugin
+from sim.station_pose import base_T_station, check_level3
 from sim.plugins.gripper_plugin import GripperPlugin
 
 
@@ -114,11 +116,14 @@ class SimNode(Node):
 
         self.gripper = GripperPlugin(self.engine)
         self.arm = ArmPlugin(self.engine, gripper=self.gripper)
+        self.column = ColumnPlugin(self.engine)
         self.engine.register(self.gripper)
         self.engine.register(self.arm)
+        self.engine.register(self.column)
         self.engine.setup()
 
         self._setup_station()
+        self.column.configure(self._world_T_station, self._C, self._tool_offset())
 
     # ---------- 配置 ----------
 
@@ -152,10 +157,13 @@ class SimNode(Node):
         self._C = _mat_from_flat(mount.get("frame6_T_link6"))
 
         explicit = cfg.get("pose_xyz_rpy")
+        rmuc = cfg.get("rmuc", {}) or {}
         if explicit:
             world_T_station = np.eye(4)
             world_T_station[:3, 3] = np.asarray(explicit[:3], dtype=float)
             world_T_station[:3, :3] = _rpy_to_mat(*[float(v) for v in explicit[3:6]])
+        elif rmuc.get("enabled"):
+            world_T_station = self._station_from_rmuc(rmuc)
         else:
             world_T_station = self._station_from_joint(
                 np.asarray(cfg.get("from_joint") or np.zeros(6), dtype=float))
@@ -185,6 +193,24 @@ class SimNode(Node):
             f"兑换站 world 位置 {np.round(world_T_station[:3, 3], 4).tolist()}, "
             f"相对 arm_base {np.round(rel[:3, 3], 4).tolist()} "
             f"(距离 {np.linalg.norm(rel[:3, 3]):.3f} m)")
+
+    def _station_from_rmuc(self, rmuc: dict) -> np.ndarray:
+        """按 RMUC2026 规则的科技核心位姿 + 底盘在装配坐标系里的摆放, 算站体 world 位姿。
+
+        底盘焊在 world, 所以反过来摆站体: world_T_station = world_T_base @ base_T_station。
+        地面 = world z 0 = 机器人所站的装配区地面 (规则 z 是相对它量的)。
+        """
+        pose = dict(zip(("x", "y", "z", "theta", "phi", "alpha"), (float(v) for v in rmuc["pose"])))
+        for problem in check_level3(pose):
+            self.get_logger().warn(f"station.rmuc.pose 不是三级难度合规位姿: {problem}")
+        with self.engine.lock:
+            world_T_base = _pose_of(self.engine.data, "root")
+        base_height = float(world_T_base[2, 3])
+        world_T_station = world_T_base @ base_T_station(pose, rmuc["chassis_in_O"], base_height)
+        self.get_logger().info(
+            f"站体按 RMUC2026 规则摆放: pose(x,y,z mm / θ,φ,α °)={list(rmuc['pose'])} "
+            f"底盘在装配坐标系 (x,y m, yaw °)={list(rmuc['chassis_in_O'])}")
+        return world_T_station
 
     def _station_from_joint(self, q: np.ndarray) -> np.ndarray:
         """用一组演示关节角做 FK, 取那一刻的 TCP 位姿当站体系。
