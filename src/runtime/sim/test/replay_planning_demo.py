@@ -223,6 +223,7 @@ def main() -> int:
         req.header.frame_id = "arm_base"
         req.start_joint = np.asarray(start, dtype=np.float32).tolist()
         mat_to_pose(T_target, req.target_pose)
+        mat_to_pose(T_station, req.station_pose)  # 碰撞场景按真实站位摆放
         req.timeout = float(args.plan_timeout)
         node.req_pub.publish(req)
         log.info("已发 ApproachRequest, 等 /plan/approach/result ...")
