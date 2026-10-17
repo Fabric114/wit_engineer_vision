@@ -1,3 +1,4 @@
+# test_arm_capsules.py — 用连杆 mesh 校验 config 碰撞胶囊: 必须包住 mesh, 且不过胖。
 """test_arm_capsules.py — 用连杆 mesh 验证 config 里的碰撞胶囊 (黄金检查)。
 
 思路 (为什么这样验)
@@ -38,14 +39,17 @@ from planning import ArmModel, load_config
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # 直接 python3 跑时也能 import 同目录
 from test_dh_mujoco import _build_mount_constants, _urdf_frames  # noqa: E402
 
+# mesh 目录候选: 环境变量 RM26_MESHES 优先, 其次仓库内相对路径。
 _HERE = Path(__file__).resolve().parent
 _MESH_CANDIDATES = [
     os.environ.get("RM26_MESHES"),
     _HERE / ".." / ".." / "runtime" / "sim" / "model" / "rm26_engineer_description" / "meshes",
 ]
+# 参与校验的连杆 / DH 系编号 1..6。
 _LINKS = range(1, 7)
 
 
+# helper: 返回第一个含 link_1.obj 的 mesh 目录, 都找不到返回 None。
 def _find_meshes() -> Path | None:
     for cand in _MESH_CANDIDATES:
         if cand and Path(cand).is_dir() and (Path(cand) / "link_1.obj").is_file():
@@ -53,6 +57,7 @@ def _find_meshes() -> Path | None:
     return None
 
 
+# helper: 只解析 OBJ 的 "v x y z" 顶点行; 没有顶点则报错。
 def _obj_vertices(path: Path) -> np.ndarray:
     vertices = [
         [float(value) for value in tokens[1:4]]
@@ -64,6 +69,7 @@ def _obj_vertices(path: Path) -> np.ndarray:
     return np.asarray(vertices, dtype=float)
 
 
+# helper: 用 inv(DH_i) @ inv(F0) @ A0[i] (q=0) 把 link_i 顶点从 link 系换到 DH 第 i 系。
 def _link_vertices_in_dh_frames(mesh_dir: Path, arm: ArmModel) -> dict[int, np.ndarray]:
     """返回 {i: link_i 的顶点在 DH 第 i 系的坐标 (N, 3)}。"""
     mount, _ = _build_mount_constants()                  # line_link -> arm_base
@@ -78,6 +84,7 @@ def _link_vertices_in_dh_frames(mesh_dir: Path, arm: ArmModel) -> dict[int, np.n
     return out
 
 
+# helper: 点集到线段 [start, end] 的最短距离; 线段退化成点时即点距。
 def _distance_to_segment(points: np.ndarray, start: np.ndarray, end: np.ndarray) -> np.ndarray:
     segment = np.asarray(end, dtype=float) - np.asarray(start, dtype=float)
     length = float(np.linalg.norm(segment))
@@ -89,6 +96,7 @@ def _distance_to_segment(points: np.ndarray, start: np.ndarray, end: np.ndarray)
     return np.linalg.norm(offset - projection[:, None] * direction, axis=1)
 
 
+# helper (__main__ 也用它生成 YAML): 给定轴向下的最紧包围胶囊, 返回 (from, to, radius)。
 def fit_capsule(points: np.ndarray, axis=None) -> tuple[np.ndarray, np.ndarray, float]:
     """拟合包住 ``points`` 的最小胶囊 (给定轴向; axis=None 用 PCA 主轴)。
 
@@ -103,9 +111,11 @@ def fit_capsule(points: np.ndarray, axis=None) -> tuple[np.ndarray, np.ndarray, 
         else np.asarray(axis, dtype=float)
     )
     direction = direction / np.linalg.norm(direction)
+    # 点在轴向上的投影 along 与到轴线的垂距 perpendicular; 最大垂距即半径
     along = centered @ direction
     perpendicular = np.linalg.norm(centered - along[:, None] * direction, axis=1)
     radius = float(perpendicular.max())
+    # cap: 每点在半径球帽内可让出的轴向余量, 据此把两端点向内收紧
     cap = np.sqrt(np.maximum(0.0, radius**2 - perpendicular**2))
     low, high = float((along + cap).min()), float((along - cap).max())
     if high < low:                                       # 整团点都在一个球里
@@ -113,6 +123,7 @@ def fit_capsule(points: np.ndarray, axis=None) -> tuple[np.ndarray, np.ndarray, 
     return center + low * direction, center + high * direction, radius
 
 
+# helper: x/y/z/PCA 四种轴向拟合择优, 返回 (轴向标签, from, to, radius)。
 def _best_fit(points: np.ndarray) -> tuple[str, np.ndarray, np.ndarray, float]:
     """在 x/y/z/PCA 四个轴向里挑半径最小的; 轴对齐只要不差过 1 mm 就优先 (配置好读)。"""
     candidates = {
@@ -126,11 +137,16 @@ def _best_fit(points: np.ndarray) -> tuple[str, np.ndarray, np.ndarray, float]:
     return tag, *candidates[tag]
 
 
+# helper: 读 config 胶囊并按 DH frame 分组, 跳过 placeholder 条目。
 def _config_capsules() -> dict[int, list[dict]]:
-    """把 config 的胶囊按 frame 分组 (名字带 placeholder 的跳过: 那是待实测的夹爪)。"""
+    """把 config 的胶囊按 frame 分组。
+
+    跳过: 名字带 placeholder 的 (没有网格可验); payload: true 的 (被夹持的矿石, 不是连杆网格,
+    由 test_payload_capsule_encloses_ore 单独验)。
+    """
     grouped: dict[int, list[dict]] = {index: [] for index in _LINKS}
     for entry in load_config()["collision"]["arm"]["capsules"]:
-        if "placeholder" in str(entry["name"]):
+        if "placeholder" in str(entry["name"]) or entry.get("payload"):
             continue
         grouped.setdefault(int(entry["frame"]), []).append(entry)
     return grouped
@@ -138,6 +154,7 @@ def _config_capsules() -> dict[int, list[dict]]:
 
 # ===================== pytest 用例 =====================
 
+# fixture: 各连杆顶点在对应 DH 系下的坐标 {i: (N, 3)}; 找不到 mesh 则 skip。
 @pytest.fixture(scope="module")
 def _vertices():
     mesh_dir = _find_meshes()
@@ -146,6 +163,8 @@ def _vertices():
     return _link_vertices_in_dh_frames(mesh_dir, ArmModel.from_config(load_config()["arm"]))
 
 
+# 期望: frame 1..6 每个都至少配有一根胶囊。
+# TODO(注释): 本用例没用到 _vertices 的值, 推测只是借它在缺 mesh 时一并 skip, 待确认。
 def test_every_link_has_a_capsule(_vertices):
     """6 根连杆每根都要有胶囊, 漏一根就是那段臂对碰撞检查隐身。"""
     grouped = _config_capsules()
@@ -153,11 +172,13 @@ def test_every_link_has_a_capsule(_vertices):
     assert not missing, f"这些 DH 系没有胶囊 (对应连杆不参与碰撞检查): {missing}"
 
 
+# 期望: 每个 link 的全部顶点到胶囊并集的有符号距离 <= 1e-9 (即都在胶囊内)。
 def test_capsules_enclose_link_meshes(_vertices):
     """config 的胶囊必须把对应连杆的 mesh 整个包住 (胶囊凸 -> 顶点包住即整面包住)。"""
     grouped = _config_capsules()
     for index in _LINKS:
         points = _vertices[index]
+        # 多根胶囊取并集: 每个顶点取对各胶囊有符号距离的最小值 (负 = 在内)
         distances = np.full(len(points), np.inf)
         for entry in grouped[index]:
             inside = _distance_to_segment(points, entry["from"], entry["to"]) - float(entry["radius"])
@@ -169,6 +190,7 @@ def test_capsules_enclose_link_meshes(_vertices):
         )
 
 
+# 期望: 单胶囊连杆的半径不超过该 mesh 最紧拟合半径 + 20 mm。
 def test_capsules_are_not_over_inflated(_vertices):
     """胶囊也不能明显比 mesh 胖: 虚胖会白丢可行解 (要安全余量请用 extra_radius)。"""
     grouped = _config_capsules()
@@ -183,6 +205,41 @@ def test_capsules_are_not_over_inflated(_vertices):
         )
 
 
+# helper: MJCF 里 energy_unit geom (挂在 link_6 上的矿石) 的顶点, 换到 DH 第 6 系。
+def _ore_vertices_in_dh6() -> np.ndarray:
+    mujoco = pytest.importorskip("mujoco")
+    from scipy.spatial.transform import Rotation
+
+    mjcf = Path(__file__).resolve().parents[2] / "runtime/sim/model/rm26_engineer_description/rm26_arm.xml"
+    if not mjcf.is_file():
+        pytest.skip(f"找不到 {mjcf}")
+    model = mujoco.MjModel.from_xml_path(str(mjcf))
+    geom = model.geom("energy_unit")
+    assert model.geom_bodyid[geom.id] == model.body("link_6").id
+    mesh = model.geom_dataid[geom.id]
+    start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
+    w, x, y, z = model.geom_quat[geom.id]
+    rotation = Rotation.from_quat([x, y, z, w]).as_matrix()
+    in_link6 = model.mesh_vert[start:start + count] @ rotation.T + model.geom_pos[geom.id]
+    _, frame6_T_link6 = _build_mount_constants()
+    return in_link6 @ frame6_T_link6[:3, :3].T + frame6_T_link6[:3, 3]
+
+
+# 期望: payload 胶囊 cc_ore 包住 MJCF 里矿石的全部顶点, 且不比最紧拟合胖 5 mm 以上。
+def test_payload_capsule_encloses_ore():
+    """矿石胶囊必须和仿真里挂的矿石同一个位姿 (MJCF 改了位姿就要重拟合)。"""
+    entries = [e for e in load_config()["collision"]["arm"]["capsules"] if e.get("payload")]
+    assert [e["name"] for e in entries] == ["cc_ore"]
+    entry = entries[0]
+    assert int(entry["frame"]) == 6
+    points = _ore_vertices_in_dh6()
+    worst = float((_distance_to_segment(points, entry["from"], entry["to"]) - float(entry["radius"])).max())
+    assert worst <= 1e-9, f"矿石有顶点露在 cc_ore 外 {worst * 1000:.2f} mm"
+    _, _, tight = fit_capsule(points, (1.0, 0.0, 0.0))
+    assert float(entry["radius"]) <= tight + 0.005
+
+
+# 直接运行: 按 mesh 重新拟合每根连杆的胶囊, 打印可粘贴进 config 的 YAML 片段。
 if __name__ == "__main__":
     mesh_dir = _find_meshes()
     if mesh_dir is None:

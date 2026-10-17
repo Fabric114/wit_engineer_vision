@@ -72,13 +72,17 @@ class ArmPlugin(SimPlugin):
         ctx.data.qvel[self._dadr] = 0.0
         self._q_target = home.copy()
 
-        # line 升降轴: 本轮不驱动, 用一个软 PD 锁在当前位置。
-        # 它必须不动, 否则 line_link 位姿变了, arm_base 的安装常量 F0 就不成立。
+        # line 升降轴: 本轮不驱动, 启动时置到 config 的 arm.line_m 并用软 PD 锁住。
+        # 运行中它必须不动: planning 的车体 / 地面碰撞按同一个 line_m 摆 (collision.line_m)。
         self._line_dadr = self._line_qadr = None
         try:
             _, lq, ld = self._engine.joint_addr(["line"])
             self._line_qadr, self._line_dadr = lq[0], ld[0]
-            self._line_hold = float(ctx.data.qpos[self._line_qadr])
+            line_jid = ctx.model.joint("line").id
+            line_lo, line_hi = ctx.model.jnt_range[line_jid]
+            self._line_hold = float(np.clip(float(cfg.get("line_m", 0.0) or 0.0), line_lo, line_hi))
+            ctx.data.qpos[self._line_qadr] = self._line_hold
+            ctx.data.qvel[self._line_dadr] = 0.0
         except RuntimeError:
             pass
 
