@@ -1,15 +1,3 @@
-"""薄 ROS 节点: 按 config/camera.yaml 选相机后端 (hik | daheng | video), 取流后
-发布 /camera/image_raw + /camera/camera_info。
-
-后端由 camera.yaml 的 `type` 决定, 也可用 ROS 参数覆盖:
-    ros2 run camera camera_node --ros-args -p type:=daheng
-    ros2 run camera camera_node --ros-args -p type:=video -p video_path:=/path/to/a.mp4
-
-每个后端的参数放在同名子字典 (hik_camera / daheng_camera) 里, 与驱动
-HikCamera / DahengCamera 的构造参数一一对应。内参从 config/camera_info.yaml
-读取 (camera_calib 标定产物), 缺失时发空 CameraInfo 并告警。
-"""
-
 from __future__ import annotations
 
 import time
