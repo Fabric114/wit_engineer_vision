@@ -14,9 +14,12 @@
      body 的 pos/quat 是占位, sim_node 启动时覆写. contype/conaffinity=0: 不参与接触
      (planning 的碰撞检测默认关, 轨迹可能穿过站体, 不碰才不会"臂顶着站体抽搐").
 
-     RM2026 里桩子挂在 M/P/Q 三个关节 (step3_slide/p_axis/q_axis) 下面, 可以随 type3 动;
-     这里还没做站体关节, 先单独成一个静止子 body (零位 = RM2026 关节全 0 时的位置),
-     以后要动就在 exchange_column 上加关节. 螺丝和大红块在 RM2026 里本来就挂在站体上. -->
+     桩子 (科技核心) 照 RM2026 level 3 挂在 M/P/Q 三个关节下 (数值照搬 RM2026 exchange_station.xml):
+       exchange_column_m (站体系 x = -0.169) 上依次 step3_slide (沿站体 z 滑动) / p_axis (绕 -y, 轴过 (0,0,0.108))
+       / q_axis (绕 z), 子 body exchange_column (再 +0.169) 挂可视网格, 关节全 0 = 原来的静止位置.
+     没有接触物理 (geom 全 contype=0): 关节由 sim 的 column_plugin 按"跟随 TCP"运动学地写 qpos,
+     见 config/sim.yaml 的 station.column. step3_slide 上限 0.12 m 盖住 planning 的 slide_z_mag (0.104).
+     螺丝和大红块在 RM2026 里本来就挂在站体上. -->
 <mujoco model="exchange_station">
   <compiler angle="radian" meshdir="."/>
 
@@ -46,11 +49,17 @@
       <geom name="column_screw" class="station_visual" mesh="exchange_column_screw" rgba="0.5 0.5 0.5 1"/>
       <geom name="column_main_red" class="station_visual" mesh="exchange_column_main_red" rgba="0.9 0.1 0.1 1"/>
 
-      <body name="exchange_column">
-        <geom name="column_dark" class="station_visual" mesh="exchange_column_dark" rgba="0.05 0.05 0.05 1"/>
-        <geom name="column_light_red" class="station_visual" mesh="exchange_column_light_red" rgba="0.9 0.1 0.1 1"/>
-        <geom name="column_em_base" class="station_visual" mesh="exchange_column_em_base" rgba="0.15 0.08 0.03 0.7"/>
-        <geom name="column_em_ring" class="station_visual" mesh="exchange_column_em_ring" rgba="0.41 0.41 0.41 1"/>
+      <body name="exchange_column_m" pos="-0.169 0 0" gravcomp="1">
+        <inertial pos="0.169 0 0" mass="0.01" diaginertia="1e-5 1e-5 1e-5"/>
+        <joint name="step3_slide" type="slide" axis="0 0 1" range="0 0.12" damping="1"/>
+        <joint name="p_axis" type="hinge" axis="0 -1 0" pos="0 0 0.108" range="0 1.5708" damping="1"/>
+        <joint name="q_axis" type="hinge" axis="0 0 1" range="-1.5708 1.5708" damping="1"/>
+        <body name="exchange_column" pos="0.169 0 0">
+          <geom name="column_dark" class="station_visual" mesh="exchange_column_dark" rgba="0.05 0.05 0.05 1"/>
+          <geom name="column_light_red" class="station_visual" mesh="exchange_column_light_red" rgba="0.9 0.1 0.1 1"/>
+          <geom name="column_em_base" class="station_visual" mesh="exchange_column_em_base" rgba="0.15 0.08 0.03 0.7"/>
+          <geom name="column_em_ring" class="station_visual" mesh="exchange_column_em_ring" rgba="0.41 0.41 0.41 1"/>
+        </body>
       </body>
 
       <site name="station_site" pos="0 0 0" size="0.008" rgba="1 0 0 1"/>
