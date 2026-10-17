@@ -26,6 +26,7 @@
     <mesh name="link_4" content_type="model/obj" file="link_4.obj" />
     <mesh name="link_5" content_type="model/obj" file="link_5.obj" />
     <mesh name="link_6" content_type="model/obj" file="link_6.obj" />
+    <mesh name="energy_unit" file="energy_unit.stl" />
     <texture name="texplane" type="2d" builtin="checker" rgb1=".0 .0 .0" rgb2=".8 .8 .8" width="100" height="100" />
     <material name="matplane" reflectance="0." texture="texplane" texrepeat="1 1" texuniform="true" />
     <material name="visualgeom" rgba="0.5 0.9 0.2 1" />
@@ -97,10 +98,17 @@
                   <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="link_5" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
                   <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="link_5" />
                   <body name="link_6" pos="-0.0429147 -0.00270639 -0.0405" quat="0.539375 -0.490288 0.509527 -0.457247">
-                    <inertial pos="0.00646902 0.0373465 0.043" quat="0.704508 0.704508 -0.0605657 -0.0605647" mass="0.349896" diaginertia="0.000643882 0.000453558 0.000306376" />
+                    <inertial pos="0.00580071 0.033486 0.043" quat="-0.455334 -0.455334 0.540992 0.54099" mass="0.318869" diaginertia="0.000301558 0.000383194 0.000576975" />
                     <joint name="J6" range="-1.57 1.57" axis="0 0 -1" />
                     <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="link_6" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
                     <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="link_6" />
+                    <!-- 被夹持的矿石 (能量单元, field_assets/Energy_Unit.STL 的拷贝), 固定在 link_6 上, 只做可视。
+                         Ø60 中段 (STL z 35~110 mm) 的中点对准两爪中心; 轴线沿第 6 DH 系 +x (= TCP x, 插入轴),
+                         小端 (STL z=0) 朝插入方向 −x, 与 RM2026 一致; 截面中心在两爪中线 (DH6 y = TCP y, z = −0.043)。
+                         质量 0.01 kg 是占位 (同 RM2026 仿真), 真值待测。 规划侧对应 config 的 cc_ore 胶囊。 -->
+                    <geom name="energy_unit" type="mesh" mesh="energy_unit" pos="-0.061050 0.081540 0.043000"
+                          quat="0 0.707107 0 0.707107" rgba="0.95 0.95 0.95 1" mass="0.01"
+                          contype="0" conaffinity="0" />
                   </body>
                 </body>
               </body>

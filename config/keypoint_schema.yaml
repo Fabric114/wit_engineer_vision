@@ -40,7 +40,4 @@ exchange_station:
     light_TL: [-0.112000, -0.114870,  0.167312]
     light_BL: [-0.112000, -0.114870,  0.035953]
 
-# 发射机构 :
-# launcher:
-#   class_id: 2
-#   keypoints: {...}
+# 发射机构（会有吗） :

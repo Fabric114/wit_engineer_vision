@@ -1,34 +1,22 @@
 arm:
-  # IK 解法 (arm_model.IK_TYPES), 分支号含义随解法不同, 换了要同步下面各处 ik_branches:
-  #   rm26_arm        -> rm26_arm 专用闭式解 (J3/J4/J5 三轴共点), 向量化出 8 分支;
-  #                      branch = 4·[s6<0] + 2·[s2<0] + [s4<0], 真解多落在 0 / 4。
-  #                      见 docs/2026-09-26-rm26-arm-wrist-structure-and-closed-form-ik.md
-  #   spherical_wrist -> 标准球腕解析解 (J4/J5/J6 三轴共点的臂), 对 rm26_arm 不成立;
-  #   numeric         -> scipy least_squares 逐个解, 与臂型无关, 慢 (约 16 ms/次), "分支"只是初值。
+  # IK (rm26_arm/spherical_wrist/numeric):
   ik_type: rm26_arm
-  # 旧开关, 只在没写 ik_type 时生效 (true -> spherical_wrist, false -> numeric)。
-  use_analytic_ik: false
 
   dh:
-    #参考
-    # alpha: [0.0, -1.5707963267948966, 3.141592653589793, -1.5707963267948966, 1.5707963267948966, -1.5707963267948966]
-    # a: [0.0, 0.0, 0.38, 0.0, 0.0, 0.0]
-    # d: [0.0, 0.0, 0.0, 0.4345, 0.0, 0.0]
-    # theta_offset: [0.0, -2.7525588, 1.7870426, -3.141592653589793, 0.0, 0.0]
-
-    # T_i = Rotx(alpha_i)·Transx(a_i)·Rotz(theta_i)·Transz(d_i);
-    # base(arm_base) 取在 J1 转轴上; 关节符号与 URDF/MJCF 一致, joint_limits 可直接照搬。
+    # 标准 Craig 改进 DH: T_i = Rotx(α_{i-1})·Transx(a_{i-1})·Rotz(θ_i)·Transz(d_i), i=1..6。
+    # 数组下标 0..5 依次是 α_0..α_5 / a_0..a_5; 第 i 行 (i=1..6) 取 [i-1]。
+    # 这与旧写法 T_i = Rotx(α_i)·... 数值完全等价, 只是表头下标从 i 改成 i-1;
+    # 不要把数组整体移位 —— 移位会改变 FK。
+    # base(arm_base) 取在 J1 转轴上; 关节符号与 URDF/MJCF 一致。
     alpha:        [0.0, -3.141592653589793, 1.5707963267948966, 1.5707963267948966, 1.5707963267948966, 1.5707963267948966]
     a:            [0.0, 0.191004, 0.0, 0.0, 0.0, 0.0]
     d:            [0.0, -0.0545, 0.1455, 0.0005, 0.1235, 0.043]
     theta_offset: [0.0, -0.863131, -1.606785, 3.135522, 3.11464, 3.040133]
 
   tool:
-    # tcp_offset_6_tcp: [0.03, 0.0, 0.12]
     tcp_offset_6_tcp: [0.00253, -0.08154, -0.04380]
 
   joint_limits:
-    # 来源: rm26_arm.urdf 的 <limit lower=/upper=> 与 rm26_arm.xml 的 joint range。
     #        J1     J2     J3    J4    J5     J6
     lower: [-0.52, -0.52, -3.14, 0.0, -1.39, -1.57]
     upper: [ 1.91,  2.61,  3.14, 1.57,  4.36,  1.57]
@@ -73,15 +61,43 @@ arm:
 
 collision:
   station:
-    # 兑换站碰撞网格所在目录, 相对工作区根。 3 个 .obj 取自参考项目
-    # RM2026-Engineer-Assembly-Algorithm 的 arm_exchange_core/assets/collision/ (原样拷贝),
-    # 站体局部系, 单位米。 与 sim 共用一处, 不在 planning 包里另存一份。
     asset_dir: src/runtime/sim/model/exchange_station
     meshes:
       - asset: exchange_station_dark.obj
       - asset: exchange_station_glow.obj
     local_exchange_meshes:
       - asset: exchange_column_collision.obj
+    assembly_allowed_contact: [cc_link6, cc_ore]
+
+  # 车体,老车暂时不含自碰撞。
+  robot_body:
+    asset_dir: src/runtime/sim/model/rm26_engineer_description/meshes
+    meshes:
+      - asset: base_link.obj
+        arm_base_T_mesh: [0.645012, -0.764172, 0.0, 0.047139, 0.764172, 0.645012, 0.0, -0.10849, 0.0, 0.0, 1.0, -0.323, 0.0, 0.0, 0.0, 1.0]
+        allowed_contact: [cc_link1]
+      - asset: line_link.obj
+        follows_line: true   # 升降滑台随臂升降, 相对 arm_base 不动 (不受 line_m 下移)
+        arm_base_T_mesh: [0.645012, 0.764172, 0.0, 0.0, 0.764172, -0.645012, 0.0, 0.0, 0.0, 0.0, -1.0, -0.107, 0.0, 0.0, 0.0, 1.0]
+        allowed_contact: [cc_link1]
+      - asset: wheel_link_1.obj
+        arm_base_T_mesh: [-0.764172, 0.0, -0.645012, 0.374001, 0.645012, 0.0, -0.764172, -0.000308, 0.0, -1.0, 0.0, -0.243, 0.0, 0.0, 0.0, 1.0]
+      - asset: wheel_link_2.obj
+        arm_base_T_mesh: [-0.764172, 0.0, -0.645012, 0.098899, 0.645012, 0.0, -0.764172, 0.231896, 0.0, -1.0, 0.0, -0.243, 0.0, 0.0, 0.0, 1.0]
+      - asset: wheel_link_3.obj
+        arm_base_T_mesh: [-0.764172, 0.0, -0.645012, -0.004621, 0.645012, 0.0, -0.764172, -0.448877, 0.0, -1.0, 0.0, -0.243, 0.0, 0.0, 0.0, 1.0]
+      - asset: wheel_link_4.obj
+        arm_base_T_mesh: [-0.764172, 0.0, -0.645012, -0.279723, 0.645012, 0.0, -0.764172, -0.216673, 0.0, -1.0, 0.0, -0.243, 0.0, 0.0, 0.0, 1.0]
+
+  # 地面: 顶面在 arm_base 系 z = z_m 的实心薄盒。 sim 里底盘焊在 world, 地面 world z = 0 ->
+  # arm_base 系 z = -0.4781 (line = 0)。 真车要按实测底盘离地高度改。
+  # 升降轴 line 的高度 (m, 0 = 最低, 0.38 = 升到顶)。 上面 robot_body / ground 按 line = 0 写,
+  # 实际用时底盘 / 轮子 / 地面在 arm_base 系里整体下移 line_m。 必须与 config/sim.yaml 的 arm.line_m 相同
+  # (test_collision_safety 守着)。 2026-10-17 定为 0.1 (升到顶够不到三级高度, 见 config/sim.yaml)。
+  line_m: 0.1
+
+  ground:
+    z_m: -0.478106
 
   arm:
     # src/planning/test/test_arm_capsules.py —— 它既是黄金检查 (pytest 里复验包围性),
@@ -105,8 +121,11 @@ collision:
     # 代价: 6 根 (原来 3 根) 胶囊 -> 每次碰撞检查的 hpp-fcl 调用翻倍。 嫌慢就砍 frame 1
     # (它贴着 base 基本不会撞外物), 别砍中间几根。
     #
-    # 缺口: 真夹爪不在 URDF/MJCF 里, 没法从模型拟合。 装上夹爪后要按实测补一根
-    # frame 6 的胶囊 (名字里带 placeholder 的条目会被上面那个测试跳过)。
+    # 夹爪: link_6.obj 本身含安装座+固定夹爪 (沿第 6 系 -y 伸出约 11 cm), cc_link6 已包住。
+    # 2026-10-17 换成 GC4_1014 导出的 60 mm 开口版 (两爪内侧在第 6 系 z = -0.013 / -0.073,
+    # 中心 -0.043 与 TCP 重合, 夹矿石中部 Ø60 段)。
+    # 缺口: 被夹持的矿石没有几何; 夹爪张开状态没建模。 要补就加 frame 6 的胶囊
+    # (名字里带 placeholder 的条目会被上面那个测试跳过)。
     capsules:
       - name: cc_link1
         frame: 1
@@ -135,9 +154,17 @@ collision:
         radius: 0.041        # 轴向 y, 最紧 40.74 mm
       - name: cc_link6
         frame: 6
-        from: [0.0015, -0.0858, -0.0422]
-        to: [0.0015, -0.0291, -0.0422]
-        radius: 0.062        # 轴向 y, 最紧 61.04 mm (横截面本来就粗, 6 根里最胖)
+        from: [0.0017, -0.0925, -0.0423]
+        to: [0.0017, -0.029, -0.0423]
+        radius: 0.061        # 轴向 y, 最紧 60.96 mm, 取整后余量 +0.04 mm (2026-10-17 按 60 mm 开口夹爪重拟合)
+      # 被夹持的矿石 (payload: 不属于某根连杆的网格, test_arm_capsules 单独对 MJCF 里的 energy_unit geom 验包围)。
+      # 位姿真值在 rm26_arm.xml 的 energy_unit geom; 改那里就要重拟合这根。 装配段对桩体豁免 (见上面 assembly_allowed_contact)。
+      - name: cc_ore
+        frame: 6
+        payload: true
+        from: [-0.0299, -0.0816, -0.043]
+        to: [0.0819, -0.0816, -0.043]
+        radius: 0.048        # 轴向 x (插入轴), 最紧 47.52 mm (方块大端对角线决定), 取整后余量 +0.44 mm
 
 planning:
   exchange:
@@ -193,6 +220,12 @@ planning:
         roll_free: true
         joint_reference_sigma_deg: 30.0
         max_nfev: 40
+        # 近似解的验收阈值 (硬门槛; 上面的 sigma 只是优化权重)。 超任一项则修复不算成功。
+        # 过渡值: 取 test_dh_mujoco 的模型一致性门槛 (位置 <1 mm / 姿态 <0.1°), 不是实测装配间隙;
+        # 拿到配合间隙与测量误差预算后按它核定。 删掉这两个键 = 近似解一律拒绝。
+        # 见 docs/audits/2026-10-09/planning-safety-fix-spec.md
+        max_position_error_m: 0.001
+        max_axis_error_deg: 0.1
       joint_path:
         roll_sample_step_deg: 5.0
         bandwidth: 6
@@ -202,6 +235,14 @@ planning:
         motion_l2_weight: 0.5
         joint_limit_margin_rad: 0.25
         joint_limit_weight: 5.0
+        # type3 相邻路点允许的最大单轴关节变化 (rad), 硬门槛: 超了这条边在 Viterbi 里不可走,
+        # 修复后的路点也要再查一遍。 防的是 IK 分支内跨腕奇异 / 构型翻转 (sim 实测翻转一步 2.58 rad)。
+        # 过渡值: 正常插入每层 (约 1.7 cm) 实测 0.08~0.13 rad, 取约 3 倍余量; 换 path_samples 要跟着核。
+        max_joint_step_rad: 0.4
+        # 装配请求的实测起点与流形首点允许的最大单轴差 (rad)。 阈值内在轨迹前插一段连接
+        # (有碰撞检查器时逐点查), 超出则判失败。 过渡值 (约 2.9°, 略大于 roll 采样半步),
+        # 没有实测依据, 需仿真/实机衔接测试后核定。
+        start_joint_tolerance_rad: 0.05
         q_sweep:
           sample_step_deg: 5.0
           motion_weight: 1.0
