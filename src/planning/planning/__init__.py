@@ -1,18 +1,4 @@
-"""planning: 运动规划纯算法库 (零 ROS 依赖)。
-
-移植自 RM2026-Engineer-Assembly-Algorithm 的 arm_exchange_core:
-  运动学   transform / joint_space / arm_model / trajectory
-  规划     viterbi / collision / type2 (OMPL BIT*) / type3 (装配流形)
-
-设计上运动学本应落在 task 包 (见 README_PRE.md), 当前仓库暂无 task 包,
-为让 planning 自洽可跑, 先随规划一并落在这里, 后续可整体切出到 task。
-
-用法:
-    from planning import load_config, ArmModel, Type3Planner
-    cfg = load_config()                 # 读工作区根 config/planning.yaml
-    arm = ArmModel.from_config(cfg["arm"])
-"""
-
+# __init__.py — planning 包入口: 导出公共 API, 提供规划配置加载。
 from __future__ import annotations
 
 from functools import lru_cache
@@ -22,26 +8,34 @@ from typing import Any
 
 import yaml
 
+# 运动学模型 (DH / FK / IK)
 from .arm_model import ArmModel
+# 关节空间 (限位与角度处理)
 from .joint_space import JointSpace
+# 轨迹时间参数化与发布前校验
 from .trajectory import (
     FixedDurationParameterizer,
     JointTrajectory,
     sample_quintic_trajectory,
+    validate_trajectory,
 )
+# 齐次变换 / 四元数工具
 from .transform import (
     quaternions_from_rotations,
     rotations_from_quaternions,
     validate_transforms,
 )
+# type3 装配段规划
 from .type3 import (
     AssemblyPath,
     AssemblyState,
     Type3PlanResult,
     Type3Planner,
 )
+# 分层图 Viterbi 选解
 from .viterbi import ViterbiResult, solve_viterbi
 
+# 公共导出列表; collision (hpp-fcl) 与 type2 (OMPL) 依赖可选系统库, 不在包入口导入。
 __all__ = [
     "load_config",
     "ArmModel",
@@ -49,6 +43,7 @@ __all__ = [
     "FixedDurationParameterizer",
     "JointTrajectory",
     "sample_quintic_trajectory",
+    "validate_trajectory",
     "validate_transforms",
     "rotations_from_quaternions",
     "quaternions_from_rotations",
@@ -61,6 +56,7 @@ __all__ = [
 ]
 
 
+# 进程内工作区根不变, 缓存结果只查一次。
 @lru_cache(maxsize=1)
 def _workspace_root() -> Path | None:
     """向上查找同时含 ``config/`` 与 ``src/`` 的工作区根; 找不到返回 None。"""
@@ -80,6 +76,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     源码树的独立安装) 时退回包内自带的 ``config/planning.yaml`` 兜底。
     也可显式传入外部 YAML 覆盖。
     """
+    # 显式路径优先; 否则先用工作区根 config/planning.yaml, 不存在再退回包内自带配置。
     if path is not None:
         config_path = Path(path)
     else:
@@ -90,6 +87,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
             if workspace_config is not None and workspace_config.is_file()
             else Path(str(files(__name__) / "config" / "planning.yaml"))
         )
+    # 校验文件存在, safe_load 读取, 顶层必须是映射。
     if not config_path.is_file():
         raise FileNotFoundError(f"planning 配置文件不存在: {config_path}")
     with config_path.open("r", encoding="utf-8") as stream:
