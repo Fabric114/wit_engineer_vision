@@ -1,3 +1,4 @@
+# test_dh_mujoco.py — 以 MuJoCo (MJCF) 为真值, 校验 config 的 DH 参数与关节限位。
 """test_dh_mujoco.py — 用 MuJoCo 把 config 里的 rm26_arm DH 表验证一遍 (黄金检查)。
 
 思路 (为什么这样验)
@@ -41,6 +42,7 @@ _MJCF_CANDIDATES = [
 ]
 
 
+# helper: 返回第一个存在的 MJCF 路径, 都找不到返回 None。
 def _find_mjcf() -> Path | None:
     for cand in _MJCF_CANDIDATES:
         if cand and Path(cand).is_file():
@@ -62,6 +64,7 @@ _JOINTS = [
 ]
 _AXIS_LOCAL = np.array([0.0, 0.0, -1.0])  # 各关节正转方向 (URDF 里 axis 全是 0 0 -1)
 
+# helper: URDF rpy -> 3x3 旋转矩阵。
 def _rpy_to_R(r: float, p: float, y: float) -> np.ndarray:
     """URDF 约定: R = Rz(yaw) @ Ry(pitch) @ Rx(roll)。"""
     cr, sr = np.cos(r), np.sin(r)
@@ -73,6 +76,7 @@ def _rpy_to_R(r: float, p: float, y: float) -> np.ndarray:
     return Rz @ Ry @ Rx
 
 
+# helper: (xyz, rpy) -> 4x4 齐次变换。
 def _T(xyz, rpy) -> np.ndarray:
     M = np.eye(4)
     M[:3, :3] = _rpy_to_R(*rpy)
@@ -80,6 +84,7 @@ def _T(xyz, rpy) -> np.ndarray:
     return M
 
 
+# helper: 绕 z 轴转 a 的 4x4 齐次变换。
 def _rotz(a: float) -> np.ndarray:
     c, s = np.cos(a), np.sin(a)
     M = np.eye(4)
@@ -87,6 +92,7 @@ def _rotz(a: float) -> np.ndarray:
     return M
 
 
+# helper: 沿 URDF 关节 origin 链做 FK, 得各关节系在 line_link 下的位姿。
 def _urdf_frames(q: np.ndarray) -> list[np.ndarray]:
     """返回 A[0..6]: A[0]=line_link(=I), A[i]=line_link->关节 i 坐标系 (含转角 q_i)。"""
     A = [np.eye(4)]
@@ -97,6 +103,7 @@ def _urdf_frames(q: np.ndarray) -> list[np.ndarray]:
     return A
 
 
+# helper: 求直线 p1+s·z1 与 p2+t·z2 的公垂线垂足 (z1、z2 须为单位向量)。
 def _closest_pts(p1, z1, p2, z2):
     """两条空间直线的最近点对; 平行时返回 None。"""
     w0 = p1 - p2
@@ -109,11 +116,13 @@ def _closest_pts(p1, z1, p2, z2):
     return p1 + s * z1, p2 + t * z2
 
 
+# helper: q=0 下按 DH 规则重建各关节 DH 系, 取 F0 = DH 第 1 系, C = inv(DH 第 6 系) @ link_6。
 def _build_mount_constants() -> tuple[np.ndarray, np.ndarray]:
     """从 URDF 几何算出安装常量 F0 (line_link->arm_base) 与 C (DH第6系->link_6)。
 
     只用 URDF 关节 origin, 不读 config, 因此不会掩盖 config 里 DH 的错误。
     """
+    # q=0 时各关节轴的位置 P 与单位方向 Z (局部轴向 (0,0,-1))
     A0 = _urdf_frames(np.zeros(6))
     P = [A0[i][:3, 3].copy() for i in range(1, 7)]
     Z = [A0[i][:3, :3] @ _AXIS_LOCAL for i in range(1, 7)]
@@ -144,6 +153,7 @@ def _build_mount_constants() -> tuple[np.ndarray, np.ndarray]:
     X[6] = x6 / np.linalg.norm(x6)
     O[6] = P[5].copy()
 
+    # 由 z、x 叉乘补出 y, 组装 DH 系 frames[1..6]
     frames = [None] * 7
     for i in range(1, 7):
         zi = Z[i - 1]; xi = X[i]; yi = np.cross(zi, xi)
@@ -156,6 +166,7 @@ def _build_mount_constants() -> tuple[np.ndarray, np.ndarray]:
     return F0, C
 
 
+# helper: 读 MuJoCo body 的世界位姿 (xmat/xpos), 拼成 4x4。
 def _body_T(model, data, name: str) -> np.ndarray:
     import mujoco
     bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name)
@@ -167,11 +178,13 @@ def _body_T(model, data, name: str) -> np.ndarray:
     return T
 
 
+# helper: 两旋转矩阵之间的夹角 (度)。
 def _rot_angle_deg(Ra: np.ndarray, Rb: np.ndarray) -> float:
     R = Ra.T @ Rb
     return float(np.degrees(np.arccos(np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0))))
 
 
+# helper: 在 MJCF 限位内随机采样 q, 比较 MuJoCo 实测 line_link->link_6 与 F0 @ FK_6(q) @ C。
 def _run_check(n_samples: int = 5000, seed: int = 0, verbose: bool = False):
     """核心校验: 返回 (max_pos_err_m, max_rot_err_deg, F0, C)。"""
     import mujoco
@@ -179,6 +192,7 @@ def _run_check(n_samples: int = 5000, seed: int = 0, verbose: bool = False):
     mjcf = _find_mjcf()
     assert mjcf is not None, "找不到 rm26_arm.xml (可设环境变量 RM26_MJCF 指向它)"
 
+    # 加载 MuJoCo 模型, 准备安装常量与被测 ArmModel
     model = mujoco.MjModel.from_xml_path(str(mjcf))
     data = mujoco.MjData(model)
 
@@ -193,6 +207,7 @@ def _run_check(n_samples: int = 5000, seed: int = 0, verbose: bool = False):
     line_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "line")
     line_adr = model.jnt_qposadr[line_id]
 
+    # 逐样本: MuJoCo 正解得实测位姿, 与 DH 预测比较, 记录最大位置/姿态误差
     rng = np.random.default_rng(seed)
     max_pos = 0.0
     max_rot = 0.0
@@ -215,6 +230,7 @@ def _run_check(n_samples: int = 5000, seed: int = 0, verbose: bool = False):
             max_pos = pos; worst_q = q
         max_rot = max(max_rot, rot)
 
+    # verbose: 打印安装常量与误差报告 (单跑模式用)
     if verbose:
         ang = _rot_angle_deg(np.eye(3), C[:3, :3])
         print(f"\nMJCF          : {mjcf}")
@@ -229,11 +245,13 @@ def _run_check(n_samples: int = 5000, seed: int = 0, verbose: bool = False):
 
 # ===================== pytest 用例 =====================
 
+# fixture: 没装 mujoco 则 skip 依赖它的用例, 否则返回 mujoco 模块。
 @pytest.fixture(scope="module")
 def _mujoco():
     return pytest.importorskip("mujoco")
 
 
+# 期望: MJCF 可定位且能被 MuJoCo 加载。
 def test_mjcf_available(_mujoco):
     """能定位到 MJCF 且 MuJoCo 能加载它 (否则本文件其余用例无意义)。"""
     mjcf = _find_mjcf()
@@ -242,6 +260,7 @@ def test_mjcf_available(_mujoco):
     _mujoco.MjModel.from_xml_path(str(mjcf))
 
 
+# 期望: 2000 组随机关节角下, 位置误差 < 1 mm, 姿态误差 < 0.1°。
 def test_config_dh_matches_mujoco(_mujoco):
     """config 的 DH 经 ArmModel FK, 应复现 MuJoCo 的 link_6 位姿 (mm / 毫度级)。"""
     if _find_mjcf() is None:
@@ -251,6 +270,7 @@ def test_config_dh_matches_mujoco(_mujoco):
     assert max_rot < 0.1, f"最大姿态误差 {max_rot:.5f}° 过大 -> config 的 DH 可能填错"
 
 
+# 期望: 6 轴、无连续关节, lower/upper 与 MJCF jnt_range 逐轴一致 (atol 1e-9)。
 def test_config_joint_limits_match_mujoco(_mujoco):
     """config 的 arm.joint_limits 应逐轴等于 MJCF 的 jnt_range, 且不含连续关节。
 
@@ -265,11 +285,13 @@ def test_config_joint_limits_match_mujoco(_mujoco):
     if mjcf is None:
         pytest.skip("找不到 rm26_arm.xml, 设 RM26_MJCF 后再跑")
 
+    # 真值: 从 MJCF 读 J1..J6 的 jnt_range
     model = _mujoco.MjModel.from_xml_path(str(mjcf))
     jids = [_mujoco.mj_name2id(model, _mujoco.mjtObj.mjOBJ_JOINT, f"J{k}") for k in range(1, 7)]
     lo = np.array([model.jnt_range[j, 0] for j in jids])
     hi = np.array([model.jnt_range[j, 1] for j in jids])
 
+    # 被测: config 解析后的 joint_space
     space = ArmModel.from_config(load_config()["arm"]).joint_space
     assert space.dof == 6, f"joint_limits 长度应为 6, 实际 {space.dof}"
     assert not space.continuous.any(), (
@@ -279,6 +301,7 @@ def test_config_joint_limits_match_mujoco(_mujoco):
     assert np.allclose(space.upper, hi, atol=1e-9), f"upper 与 MJCF 不一致: {space.upper} vs {hi}"
 
 
+# 单跑: 5000 组样本的详细报告并打印结论。
 if __name__ == "__main__":
     mp, mr, _, _ = _run_check(n_samples=5000, seed=0, verbose=True)
     ok = mp < 1e-3 and mr < 0.1

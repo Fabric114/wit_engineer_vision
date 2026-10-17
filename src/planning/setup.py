@@ -1,11 +1,14 @@
+# setup.py — planning 包的 ament_python 安装配置。
 from setuptools import find_packages, setup
 
+# ROS2 包名, 同时也是 Python 包名。
 package_name = "planning"
 
 setup(
     name=package_name,
     version="0.0.1",
     packages=find_packages(exclude=["test"]),
+    # ament 资源索引标记 + package.xml 安装到 share/, 供 ros2 pkg 发现本包。
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),

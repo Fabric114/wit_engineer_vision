@@ -1,3 +1,4 @@
+# test_planning_smoke.py — planning 冒烟测试 (导入链 / FK / IK 往返 / type3 全流程)。
 """planning 移植冒烟测试: 验证导入链、FK、type3 全流程可跑通。
 
 config/planning.yaml 的 arm.dh 是 rm26_arm 的实测 DH。 DH 的数值正确性由
@@ -15,21 +16,25 @@ from planning import ArmModel, Type3Planner, load_config
 from planning.type3 import AssemblyPath, AssemblyState, Type3PlanResult
 
 
+# 模块级共享: 默认 config。
 @pytest.fixture(scope="module")
 def config() -> dict:
     return load_config()
 
 
+# 模块级共享: 默认 config 的机械臂模型。
 @pytest.fixture(scope="module")
 def arm(config) -> ArmModel:
     return ArmModel.from_config(config["arm"])
 
 
+# 仅导入 planning 包, 能导入即通过。
 def test_import_does_not_require_optional_backends():
     """导入 planning 不应依赖 ompl / hppfcl (它们是可选后端)。"""
     import planning  # noqa: F401  仅确认可导入
 
 
+# FK 输出形状为 (N,4,4), 零位下末行为 [0,0,0,1]。
 def test_forward_kinematics_shape(arm: ArmModel):
     q = np.zeros((1, 6), dtype=float)
     fk = arm.forward_kinematics(q)
@@ -38,6 +43,7 @@ def test_forward_kinematics_shape(arm: ArmModel):
     np.testing.assert_allclose(fk.tcp_transforms[0, 3], [0, 0, 0, 1], atol=1e-9)
 
 
+# IK 往返: 闭式解 (config) 与数值解各跑一次, 至少一个分支能复现 FK 目标位姿。
 @pytest.mark.parametrize("ik_type", ["config", "numeric"])
 def test_ik_round_trip(config: dict, ik_type: str):
     """正逆解算往返: FK 得目标位姿 -> solve_ik 反解关节角 -> 再 FK 应复现同一位姿。
@@ -54,6 +60,7 @@ def test_ik_round_trip(config: dict, ik_type: str):
     assert joints.shape == (1, 8, 6)
     assert valid[0].any(), f"{arm.ik_type} IK 未能解出任何有效关节角"
 
+    # 逐有效分支 FK 回代: 位置误差 <0.1 mm 且姿态误差 <1e-3 rad 即视为复现
     reproduced = False
     for k in range(8):
         if not valid[0, k]:
@@ -70,6 +77,7 @@ def test_ik_round_trip(config: dict, ik_type: str):
     assert reproduced, f"{arm.ik_type} IK 解出的关节角未能复现目标位姿 (正逆解算未闭环)"
 
 
+# helper: 用 config 参数构造 Type3Planner (未传 start_joint_tolerance_rad, 只接受精确衔接)。
 def _make_planner(arm: ArmModel, config: dict) -> Type3Planner:
     jp = config["planning"]["exchange"]["stage_path"]["joint_path"]
     best_ik = config["planning"]["exchange"]["stage_path"]["best_ik"]
@@ -89,6 +97,7 @@ def _make_planner(arm: ArmModel, config: dict) -> Type3Planner:
     )
 
 
+# type3 全流程冒烟: 任取站位, 只要求返回 Type3PlanResult; 若成功再检查路点形状。
 def test_type3_plan_runs_end_to_end(arm: ArmModel, config: dict):
     """type3 完整流程 (建图 -> Viterbi -> 尽力修复) 应无异常返回结果对象。
 
@@ -113,6 +122,7 @@ def test_type3_plan_runs_end_to_end(arm: ArmModel, config: dict):
         assert len(result.waypoints) == len(result.rolls)
 
 
+# type2 (OMPL BIT*): 无障碍点到点规划返回 None 或 (N,6) 路点; 未装 OMPL 则跳过。
 def test_type2_bitstar_optional():
     """type2 依赖 OMPL; 装了就跑一次点到点规划, 没装则跳过。"""
     pytest.importorskip("ompl")
@@ -120,6 +130,7 @@ def test_type2_bitstar_optional():
 
     start = np.zeros(6)
     goal = np.array([0.5, 0.5, 0.5, 0.0, 0.3, 0.0])
+    # TODO(注释): 关节限位硬编码而非取自 arm.joint_space, 是否有意与 config 解耦?
     lower = np.array([-3.14, 0.0, 0.0, -3.14, -1.83, -3.14])
     upper = np.array([3.14, 2.20, 2.31, 3.14, 1.83, 3.14])
     waypoints = plan_joint_path_bitstar(
@@ -133,6 +144,7 @@ def test_type2_bitstar_optional():
     assert waypoints is None or (waypoints.ndim == 2 and waypoints.shape[1] == 6)
 
 
+# collision 模块 (hppfcl): 能构造 CapsuleSpec, segment_length 等于两端点距离。
 def test_collision_module_imports_optional():
     """collision 依赖 hppfcl; 装了就确认能构造 CapsuleSpec, 没装则跳过。"""
     pytest.importorskip("hppfcl")
