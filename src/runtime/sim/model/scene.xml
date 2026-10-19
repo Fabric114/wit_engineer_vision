@@ -1,31 +1,36 @@
-<!-- rm26 工程机器人仿真场景.
-     地面 / 灯光 / 相机都在 rm26_arm.xml 里自带, 这里只补三样:
-       1. 兑换站实体 (exchange_station/exchange_station.xml, 仅可视,
-          位姿由 sim_node 启动时覆写, 见 doc/ 的设计 §六);
-       2. 把底盘焊在世界系 (不焊 3 秒漂 226 mm, arm_base 系就废了);
-       3. 一个 compiler 覆盖, 解 include 的 mesh 路径 (见下面注释).
-     ⚠️ rm26_engineer_description/rm26_arm.xml 不要改 —— planning 的
-        test/test_dh_mujoco.py 依赖它能独立加载. -->
+<!-- rm26 工程机器人仿真场景 -->
 <mujoco model="rm26_engineer_scene">
 
   <include file="rm26_engineer_description/rm26_arm.xml"/>
 
+  <statistic center="0 0 0.5" extent="1.5"/>
   <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
     <model name="exchange_station" file="exchange_station/exchange_station.xml"/>
   </asset>
 
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20" offwidth="1920" offheight="1080"/>
+    <scale framelength="2.0" framewidth="0.1"/>
+  </visual>
   <worldbody>
-    <!-- 兑换站: 子模型自带 compiler/meshdir (理由见该文件头), prefix 为空 ->
-         body/site 名不变 (exchange_station / station_site), sim_node 按名字覆写位姿. -->
+    <geom name="floor" type="plane" size="0 0 0.05" material="groundplane"/>
+    <light pos="0 0 3" dir="0 0 -1" directional="true"/>
+    <camera name="fixed_view" pos="0.2 -1 0.5" quat="0.7071 0.7071 0 0" fovy="80"/>
+    <!-- 兑换站: 子模型自带 compiler/meshdir (理由见该文件头), prefix 为空 ->-->
+    <body name="assembly_platform" pos="0 0 0">
+      <geom name="assembly_platform_geom" type="box" size="0.75 0.75 0.075" pos="-0.75 0 0.075"
+          rgba="0.35 0.35 0.35 1" contype="0" conaffinity="0"/>
+    </body>
     <attach model="exchange_station" body="exchange_station" prefix=""/>
   </worldbody>
 
-  <!-- ⚠️ 必须排除"底盘 <-> 臂各节"的接触.
-       MuJoCo 拿 mesh 的**凸包**做碰撞, base_link.obj 的凸包是个大盒子,
-       把整条臂的活动区都包进去了 —— 实测每个 link 都和底盘"侵入" 13~164 mm,
-       约束力和 PD 对着干, J1 被顶在 0.171 rad 上不去 (目标 0.4, 差 13°).
-       root 与 link_1 不是父子关系 (中间还有 line_link), MuJoCo 不会自动排除,
-       所以得在这里手写. line_link <-> link_1 是父子, MuJoCo 自动排除. -->
+  <!-- 排除"底盘 <-> 臂各节"的接触. -->
   <contact>
     <exclude body1="root" body2="link_1"/>
     <exclude body1="root" body2="link_2"/>
@@ -40,18 +45,12 @@
     <exclude body1="line_link" body2="link_6"/>
   </contact>
 
-  <!-- 底盘固定: weld equality 比"每步硬写回 qpos[:7]"好 ——
-       实测 root 漂移 5 µm, 且保留了臂对底盘的反作用力,
-       硬写回会把关节稳态误差从 0.03° 抬到 0.45°. -->
+  <!-- 底盘固定：暂时先改成拉回 -->
   <equality>
     <weld name="chassis_pin" body1="root" solref="0.0002 1"/>
   </equality>
 
-  <!-- ⚠️ 必须放在 include 之后, 且必须带 strippath:
-       MuJoCo 会把"被 include 文件所在子目录"拼到 mesh file 前面, 而
-       rm26_arm.xml 自带 meshdir="meshes", 于是路径被拼成
-       meshes/rm26_engineer_description/base_link.obj -> 加载失败.
-       strippath 丢掉 file 里的路径只留文件名, 再由这里的 meshdir 补全. -->
+  <!-- 修复路径 -->
   <compiler angle="radian" eulerseq="zyx" autolimits="true"
             strippath="true" meshdir="rm26_engineer_description/meshes"/>
 

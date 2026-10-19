@@ -30,7 +30,7 @@ import mujoco
 from sim.mujoco_engine import MujocoEngine
 from sim.plugins.arm_plugin import ArmPlugin
 from sim.plugins.column_plugin import ColumnPlugin
-from sim.station_pose import base_T_station, check_level3
+from sim.station_pose import base_in_O, base_T_station, check_level3
 from sim.plugins.gripper_plugin import GripperPlugin
 
 
@@ -178,6 +178,22 @@ class SimNode(Node):
             m.body_pos[bid] = world_T_station[:3, 3]
             m.body_quat[bid] = quat
             mujoco.mj_forward(m, d)
+
+             # 摆底座平台 (只有 RMUC 摆法才有 O 系) ↓↓↓
+        if rmuc.get("enabled") and not explicit:
+            with self.engine.lock:
+                world_T_base = _pose_of(self.engine.data, "root")
+            world_T_O = world_T_base @ np.linalg.inv(
+                base_in_O(rmuc["chassis_in_O"], float(world_T_base[2, 3])))
+            pid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "assembly_platform")
+            if pid < 0:
+                raise RuntimeError("场景里没有 assembly_platform body")
+            pquat = np.zeros(4)
+            mujoco.mju_mat2Quat(pquat, world_T_O[:3, :3].flatten())
+            with self.engine.lock:
+                m.body_pos[pid] = world_T_O[:3, 3]
+                m.body_quat[pid] = pquat
+                mujoco.mj_forward(m, d)
 
         self._world_T_station = world_T_station
         self._station_pub = None

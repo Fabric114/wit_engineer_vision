@@ -27,43 +27,33 @@
     <mesh name="link_5" content_type="model/obj" file="link_5.obj" />
     <mesh name="link_6" content_type="model/obj" file="link_6.obj" />
     <mesh name="energy_unit" file="energy_unit.stl" />
-    <texture name="texplane" type="2d" builtin="checker" rgb1=".0 .0 .0" rgb2=".8 .8 .8" width="100" height="100" />
-    <material name="matplane" reflectance="0." texture="texplane" texrepeat="1 1" texuniform="true" />
     <material name="visualgeom" rgba="0.5 0.9 0.2 1" />
   </asset>
 
   <worldbody>
-    <light directional="true" diffuse="0.4 0.4 0.4" specular="0.1 0.1 0.1" pos="0 0 5.0" dir="0 0 -1" castshadow="false" />
-    <light directional="true" diffuse="0.6 0.6 0.6" specular="0.2 0.2 0.2" pos="0 0 4" dir="0 0 -1" />
-    <geom name="ground" type="plane" pos="0 0 0" size="100 100 0.001" quat="1 0 0 0" material="matplane" condim="3" conaffinity="15" />
-    <camera name="fixed" pos="0 -3.0 0.6551064080886186" xyaxes="1 0 0 0 0 1" />
-    <camera name="track" mode="trackcom" pos="0 -3.0 0.6551064080886186" xyaxes="1 0 0 0 0 1" />
     <body name="root" pos="0 0 0.15510640808861867" quat="1 0 0 0">
       <freejoint name="root" />
       <site name="imu" size="0.01" pos="0 0 0" />
       <geom type="mesh" rgba="0.898039 0.917647 0.929412 1" mesh="base_link" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
       <geom type="mesh" rgba="0.898039 0.917647 0.929412 1" mesh="base_link" />
+      <!-- 四个轮子不带 joint，轮子和底盘是一个刚体 -->
       <body name="wheel_link_1" pos="0.2935 -0.18 0.08" quat="0.5 -0.5 -0.5 0.5">
         <inertial pos="0 0 0.03" quat="0.5 0.5 -0.5 0.5" mass="1.20637" diaginertia="0.00386039 0.00229211 0.00229211" />
-        <joint name="wheel_1" range="-10 10" axis="0 0 -1" />
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="wheel_link_1" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="wheel_link_1" />
       </body>
       <body name="wheel_link_2" pos="0.2935 0.18 0.08" quat="0.5 -0.5 -0.5 0.5">
         <inertial pos="0 0 0.03" quat="0.5 0.5 -0.5 0.5" mass="1.20637" diaginertia="0.00386039 0.00229211 0.00229211" />
-        <joint name="wheel_2" range="-10 10" axis="0 0 -1" />
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="wheel_link_2" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="wheel_link_2" />
       </body>
       <body name="wheel_link_3" pos="-0.2935 -0.18 0.08" quat="0.5 -0.5 -0.5 0.5">
         <inertial pos="0 0 -0.03" quat="0.5 0.5 -0.5 0.5" mass="1.20637" diaginertia="0.00386039 0.00229211 0.00229211" />
-        <joint name="wheel_3" range="-10 10" axis="0 0 -1" />
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="wheel_link_3" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="wheel_link_3" />
       </body>
       <body name="wheel_link_4" pos="-0.2935 0.18 0.08" quat="0.5 -0.5 -0.5 0.5">
         <inertial pos="0 0 -0.03" quat="0.5 0.5 -0.5 0.5" mass="1.20637" diaginertia="0.00386039 0.00229211 0.00229211" />
-        <joint name="wheel_4" range="-10 10" axis="0 0 -1" />
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="wheel_link_4" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
         <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="wheel_link_4" />
       </body>
@@ -102,10 +92,6 @@
                     <joint name="J6" range="-1.57 1.57" axis="0 0 -1" />
                     <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="link_6" contype="1" conaffinity="0" density="0" group="1" class="visualgeom" />
                     <geom type="mesh" rgba="0.792157 0.819608 0.933333 1" mesh="link_6" />
-                    <!-- 被夹持的矿石 (能量单元, field_assets/Energy_Unit.STL 的拷贝), 固定在 link_6 上, 只做可视。
-                         Ø60 中段 (STL z 35~110 mm) 的中点对准两爪中心; 轴线沿第 6 DH 系 +x (= TCP x, 插入轴),
-                         小端 (STL z=0) 朝插入方向 −x, 与 RM2026 一致; 截面中心在两爪中线 (DH6 y = TCP y, z = −0.043)。
-                         质量 0.01 kg 是占位 (同 RM2026 仿真), 真值待测。 规划侧对应 config 的 cc_ore 胶囊。 -->
                     <geom name="energy_unit" type="mesh" mesh="energy_unit" pos="-0.061050 0.081540 0.043000"
                           quat="0 0.707107 0 0.707107" rgba="0.95 0.95 0.95 1" mass="0.01"
                           contype="0" conaffinity="0" />
@@ -120,10 +106,6 @@
   </worldbody>
 
   <actuator>
-    <motor name="wheel_1" joint="wheel_1" ctrllimited="true" ctrlrange="-1 1" gear="1" />
-    <motor name="wheel_2" joint="wheel_2" ctrllimited="true" ctrlrange="-1 1" gear="1" />
-    <motor name="wheel_3" joint="wheel_3" ctrllimited="true" ctrlrange="-1 1" gear="1" />
-    <motor name="wheel_4" joint="wheel_4" ctrllimited="true" ctrlrange="-1 1" gear="1" />
     <motor name="line" joint="line" ctrllimited="true" ctrlrange="-1 1" gear="1" />
     <motor name="J1" joint="J1" ctrllimited="true" ctrlrange="-1 1" gear="1" />
     <motor name="J2" joint="J2" ctrllimited="true" ctrlrange="-1 1" gear="1" />
@@ -134,18 +116,6 @@
   </actuator>
 
   <sensor>
-    <actuatorpos name="wheel_1_p" actuator="wheel_1" />
-    <actuatorvel name="wheel_1_v" actuator="wheel_1" />
-    <actuatorfrc name="wheel_1_f" actuator="wheel_1" noise="0.001" />
-    <actuatorpos name="wheel_2_p" actuator="wheel_2" />
-    <actuatorvel name="wheel_2_v" actuator="wheel_2" />
-    <actuatorfrc name="wheel_2_f" actuator="wheel_2" noise="0.001" />
-    <actuatorpos name="wheel_3_p" actuator="wheel_3" />
-    <actuatorvel name="wheel_3_v" actuator="wheel_3" />
-    <actuatorfrc name="wheel_3_f" actuator="wheel_3" noise="0.001" />
-    <actuatorpos name="wheel_4_p" actuator="wheel_4" />
-    <actuatorvel name="wheel_4_v" actuator="wheel_4" />
-    <actuatorfrc name="wheel_4_f" actuator="wheel_4" noise="0.001" />
     <actuatorpos name="line_p" actuator="line" />
     <actuatorvel name="line_v" actuator="line" />
     <actuatorfrc name="line_f" actuator="line" noise="0.001" />
