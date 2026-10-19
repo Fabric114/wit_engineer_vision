@@ -208,7 +208,7 @@ class SimNode(Node):
         base_height = float(world_T_base[2, 3])
         world_T_station = world_T_base @ base_T_station(pose, rmuc["chassis_in_O"], base_height)
         self.get_logger().info(
-            f"站体按 RMUC2026 规则摆放: pose(x,y,z mm / θ,φ,α °)={list(rmuc['pose'])} "
+            f"站体位姿: pose(x,y,z mm / θ,φ,α °)={list(rmuc['pose'])} "
             f"底盘在装配坐标系 (x,y m, yaw °)={list(rmuc['chassis_in_O'])}")
         return world_T_station
 

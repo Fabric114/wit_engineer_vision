@@ -77,15 +77,16 @@ station:
 
 mount:
   # line_link -> arm_base 的安装常量 F0 (行优先 16 个数)。
-  # 来源: src/planning/test/test_dh_mujoco.py::_build_mount_constants(), 已验证。
-  # 绕 z 转 49.8334°, z 轴翻转, 沿 z 偏 -0.107 m。
+  # 来源: src/planning/tools/print_config.py (从 URDF 生成), test_urdf_consistency.py 守着。
+  # arm_base x 朝车头 (base_link +x), 见 docs/superpowers/specs/2026-10-17-arm-base-chassis-frame-design.md;
+  # line_link 本身绕 x 翻转了 180°, 所以这里是 y、z 轴翻转, 沿 z 偏 -0.107 m。
   # ⚠️ 只在 line = 0 时成立; line 一升降就要改成每帧读 line_link 的实时位姿。
   line_link_T_arm_base:
-    [0.645012373,  0.764172126,  0.0,  0.0,
-     0.764172126, -0.645012373,  0.0,  0.0,
-     0.0,          0.0,         -1.0, -0.107,
-     0.0,          0.0,          0.0,  1.0]
-  # 第 6 DH 系 -> URDF/MJCF link_6 的常量 C (绕 x 转 180°), 同一处来源。
+    [1.0, 0.0, 0.0, 0.0,
+     0.0, -1.0, 0.0, 0.0,
+     0.0, 0.0, -1.0, -0.107,
+     0.0, 0.0, 0.0, 1.0]
+  # 第 6 DH 系 -> URDF/MJCF link_6 的常量 C (绕 x 转 180°), 同一处来源 (print_config.py)。
   frame6_T_link6:
     [1.0,  0.0,  0.0, 0.0,
      0.0, -1.0,  0.0, 0.0,

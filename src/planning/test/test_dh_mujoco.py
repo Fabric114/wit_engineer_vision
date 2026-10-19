@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -50,120 +51,25 @@ def _find_mjcf() -> Path | None:
     return None
 
 
-# --- URDF 关节 origin (相对父连杆): (xyz, rpy), 与 rm26_arm.urdf 一致 ---
-# 只用于算 F0 / C 两个安装常量, 不参与被测的 DH 参数。
-_JOINTS = [
-    ((0.0, 0.0, -0.106999999999882), (0.0, 0.0, 0.0)),
-    ((0.1232, 0.14596, -0.0545), (3.1416, 0.0, 0.0)),
-    ((0.000655997394275049, 0.0989978265792674, 0.0), (1.5707963267949, 0.0, -0.00662628479646784)),
-    ((-0.000499676236049573, -1.79905288163473e-05, -0.0465000000000025),
-     (-1.5707963267949, 0.182122404429995, -1.53480750090966)),
-    ((0.0145369266962608, 0.0817170591873439, 0.0), (1.57079632679489, -1.53476796314872, -0.176051717388886)),
-    ((-0.0429147465036577, -0.00270638735710615, -0.040500000000001),
-     (-1.5707963267949, 0.101460063365565, -1.50781545764258)),
-]
-_AXIS_LOCAL = np.array([0.0, 0.0, -1.0])  # 各关节正转方向 (URDF 里 axis 全是 0 0 -1)
-
-# helper: URDF rpy -> 3x3 旋转矩阵。
-def _rpy_to_R(r: float, p: float, y: float) -> np.ndarray:
-    """URDF 约定: R = Rz(yaw) @ Ry(pitch) @ Rx(roll)。"""
-    cr, sr = np.cos(r), np.sin(r)
-    cp, sp = np.cos(p), np.sin(p)
-    cy, sy = np.cos(y), np.sin(y)
-    Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
-    Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
-    Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-    return Rz @ Ry @ Rx
+# --- URDF 几何: 全部委托 tools.urdf_model (直接解析 rm26_arm.urdf, 不再手抄关节 origin) ---
+# 只用于算 F0 / C 两个安装常量, 不读 config, 因此不会掩盖 config 里 DH 的错误。
+sys.path.insert(0, str(_HERE.parent))
+from tools.urdf_model import ARM_JOINTS, chain_frames, derive_arm_geometry, load_urdf  # noqa: E402
 
 
-# helper: (xyz, rpy) -> 4x4 齐次变换。
-def _T(xyz, rpy) -> np.ndarray:
-    M = np.eye(4)
-    M[:3, :3] = _rpy_to_R(*rpy)
-    M[:3, 3] = xyz
-    return M
-
-
-# helper: 绕 z 轴转 a 的 4x4 齐次变换。
-def _rotz(a: float) -> np.ndarray:
-    c, s = np.cos(a), np.sin(a)
-    M = np.eye(4)
-    M[0, 0] = c; M[0, 1] = -s; M[1, 0] = s; M[1, 1] = c
-    return M
-
-
-# helper: 沿 URDF 关节 origin 链做 FK, 得各关节系在 line_link 下的位姿。
+# helper: 沿 URDF 关节链做 FK, 得各 link 在 line_link 下的位姿。
 def _urdf_frames(q: np.ndarray) -> list[np.ndarray]:
-    """返回 A[0..6]: A[0]=line_link(=I), A[i]=line_link->关节 i 坐标系 (含转角 q_i)。"""
-    A = [np.eye(4)]
-    cur = np.eye(4)
-    for i in range(6):
-        cur = cur @ _T(_JOINTS[i][0], _JOINTS[i][1]) @ _rotz(-q[i])  # 正转方向为 (0,0,-1)
-        A.append(cur.copy())
-    return A
+    """返回 A[0..6]: A[0]=line_link(=I), A[i]=line_link->link_i (含转角 q_i, line = 0)。"""
+    frames = chain_frames(load_urdf(), dict(zip(ARM_JOINTS, map(float, q))))
+    inv_line = np.linalg.inv(frames["line_link"])
+    return [np.eye(4)] + [inv_line @ frames[f"link_{i}"] for i in range(1, 7)]
 
 
-# helper: 求直线 p1+s·z1 与 p2+t·z2 的公垂线垂足 (z1、z2 须为单位向量)。
-def _closest_pts(p1, z1, p2, z2):
-    """两条空间直线的最近点对; 平行时返回 None。"""
-    w0 = p1 - p2
-    b = float(np.dot(z1, z2)); d = float(np.dot(z1, w0)); e = float(np.dot(z2, w0))
-    den = 1.0 - b * b
-    if abs(den) < 1e-9:
-        return None
-    s = (b * e - d) / den
-    t = (e - b * d) / den
-    return p1 + s * z1, p2 + t * z2
-
-
-# helper: q=0 下按 DH 规则重建各关节 DH 系, 取 F0 = DH 第 1 系, C = inv(DH 第 6 系) @ link_6。
+# helper: 从 URDF 几何算出安装常量 F0 (line_link->arm_base) 与 C (DH第6系->link_6)。
 def _build_mount_constants() -> tuple[np.ndarray, np.ndarray]:
-    """从 URDF 几何算出安装常量 F0 (line_link->arm_base) 与 C (DH第6系->link_6)。
-
-    只用 URDF 关节 origin, 不读 config, 因此不会掩盖 config 里 DH 的错误。
-    """
-    # q=0 时各关节轴的位置 P 与单位方向 Z (局部轴向 (0,0,-1))
-    A0 = _urdf_frames(np.zeros(6))
-    P = [A0[i][:3, 3].copy() for i in range(1, 7)]
-    Z = [A0[i][:3, :3] @ _AXIS_LOCAL for i in range(1, 7)]
-    Z = [z / np.linalg.norm(z) for z in Z]
-
-    # 逐关节按公垂线定 x 轴、原点, 建 DH 坐标系 frames[1..6]
-    X = [None] * 7
-    O = [None] * 7
-    for i in range(5):  # frame 1..5
-        cp = _closest_pts(P[i], Z[i], P[i + 1], Z[i + 1])
-        if cp is None:  # 平行: x 沿公共法向
-            diff = P[i + 1] - P[i]
-            diff = diff - np.dot(diff, Z[i]) * Z[i]
-            X[i + 1] = diff / np.linalg.norm(diff)
-            O[i + 1] = P[i].copy()
-        else:
-            ci, cip1 = cp
-            diff = cip1 - ci
-            if np.linalg.norm(diff) > 1e-7:
-                X[i + 1] = diff / np.linalg.norm(diff)
-            else:  # 相交: x = z_i × z_{i+1}
-                x = np.cross(Z[i], Z[i + 1])
-                X[i + 1] = x / np.linalg.norm(x)
-            O[i + 1] = ci
-    # frame 6: x 轴取 URDF link_6 的 x 投影到垂直 z6 的平面
-    u = A0[6][:3, 0]
-    x6 = u - np.dot(u, Z[5]) * Z[5]
-    X[6] = x6 / np.linalg.norm(x6)
-    O[6] = P[5].copy()
-
-    # 由 z、x 叉乘补出 y, 组装 DH 系 frames[1..6]
-    frames = [None] * 7
-    for i in range(1, 7):
-        zi = Z[i - 1]; xi = X[i]; yi = np.cross(zi, xi)
-        F = np.eye(4)
-        F[:3, 0] = xi; F[:3, 1] = yi; F[:3, 2] = zi; F[:3, 3] = O[i]
-        frames[i] = F
-
-    F0 = frames[1].copy()                       # line_link -> arm_base
-    C = np.linalg.inv(frames[6]) @ A0[6]        # DH 第 6 系 -> URDF link_6 法兰
-    return F0, C
+    """arm_base 的定义 (x 朝车头) 与推导见 tools/urdf_model.py::derive_arm_geometry。"""
+    geometry = derive_arm_geometry(load_urdf())
+    return geometry.line_T_arm_base, geometry.frame6_T_link6
 
 
 # helper: 读 MuJoCo body 的世界位姿 (xmat/xpos), 拼成 4x4。
