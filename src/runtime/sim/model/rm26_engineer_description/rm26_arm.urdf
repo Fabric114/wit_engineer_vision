@@ -626,9 +626,9 @@
   </joint>
   <link
     name="link_6">
-    <!-- 2026-10-17: 夹爪换成 GC4_1014 导出的 60 mm 开口版。 网格/惯量从 GC4 的 link_6 系绕本系 z 轴
-         转 199.654680° 换到这里 (GC4 导出时 J3~J6 零位与本文件不同, 零件本身只改了夹爪)。
-         下面 mesh 路径仍指向原 GC3.1 STL; 仿真用的是 meshes/link_6.obj (已换)。 -->
+    <!-- 2026-10-17: 夹爪换成 GC4_1014 导出的 60 mm 开口版。 网格/惯量从 GC4 的 link_6 系换到这里:
+         p_本系 = Rz(-199.654680°) · p_GC4 (GC4 导出时 J3~J6 零位与本文件不同, 零件本身只改了夹爪)。
+         2026-10-19: ~/GC3.1_1019/meshes/link_6.STL 已按同一变换换成 GC4 夹爪; 仿真用 meshes/link_6.obj。 -->
     <inertial>
       <origin
         xyz="0.005800706194 0.033486006446 0.043000047794"
@@ -684,5 +684,35 @@
       upper="1.57"
       effort="0"
       velocity="0" />
+  </joint>
+  <!-- 以下两个是规划用的虚拟系 (无几何/惯量), 不改变任何关节定义。 数值来源: config/sim.yaml、config/planning.yaml -->
+  <!-- arm_base: 原点在 J1 轴上, z 朝上, x 朝车头 (base_link +x); 随升降 line 移动。 = line_link_T_arm_base (sim.yaml) -->
+  <link
+    name="arm_base" />
+  <joint
+    name="arm_base_joint"
+    type="fixed">
+    <origin
+      xyz="0 0 -0.107"
+      rpy="3.14159265358979 0 0" />
+    <parent
+      link="line_link" />
+    <child
+      link="arm_base" />
+  </joint>
+  <!-- tcp: 两爪中间的夹持点, 姿态同 DH 第 6 系 (x = 插入方向)。
+       = inv(frame6_T_link6) · Trans(tcp_offset_6_tcp), tcp_offset_6_tcp = [0.00253, -0.08154, -0.04380] 仍待实测 -->
+  <link
+    name="tcp" />
+  <joint
+    name="tcp_joint"
+    type="fixed">
+    <origin
+      xyz="0.00253 0.08154 0.0438"
+      rpy="3.14159265358979 0 0" />
+    <parent
+      link="link_6" />
+    <child
+      link="tcp" />
   </joint>
 </robot>

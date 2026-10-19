@@ -134,3 +134,24 @@ def test_consistency_detects_stale_yaml(configs, geometry):
     found = _mismatches(stale, sim_config, geometry)
     assert any(m.startswith("arm.dh.theta_offset") for m in found), found
     assert any("no_such_link" in m for m in found), found
+
+
+# 期望: URDF 里的虚拟系 arm_base / tcp 与规划 FK 一致 —— 任意 q 下
+# arm_base_T_tcp (URDF 链) == ArmModel.forward_kinematics(q).tcp_transforms, 且 line 升降不影响。
+# 容差用 _ALPHA_TOL: yaml DH 保留 6 位小数、alpha 取理想 π, 与 URDF 链实测差约 6e-6。
+def test_urdf_virtual_frames_match_planning_fk(configs):
+    from planning import ArmModel
+    from tools.urdf_model import chain_frames
+
+    config, _ = configs
+    model = load_urdf()
+    arm = ArmModel.from_config(config["arm"])
+    names = ["J1", "J2", "J3", "J4", "J5", "J6"]
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        q = np.array([rng.uniform(model.joints[n].lower, model.joints[n].upper) for n in names])
+        line = rng.uniform(model.joints["line"].lower, model.joints["line"].upper)
+        frames = chain_frames(model, {**dict(zip(names, q)), "line": line})
+        urdf_tcp = np.linalg.inv(frames["arm_base"]) @ frames["tcp"]
+        fk_tcp = arm.forward_kinematics(q[None, :]).tcp_transforms[0]
+        assert np.max(np.abs(urdf_tcp - fk_tcp)) < _ALPHA_TOL, (q, line, urdf_tcp, fk_tcp)
