@@ -64,6 +64,21 @@ def _pose_of(data, body: str) -> np.ndarray:
     return T
 
 
+#: exchange_station.xml 里 E 的 6 个规则关节 level_<key>, 顺序 = 规则位姿 (x, y, z, θ, φ, α)
+LEVEL_KEYS = ("x", "y", "z", "theta", "phi", "alpha")
+
+
+def _set_body_pose(model, body: str, T: np.ndarray) -> None:
+    """覆写静态 body 的 pos/quat (静态 body 的 xpos 每次 mj_forward 由 model 算出)。"""
+    bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body)
+    if bid < 0:
+        raise RuntimeError(f"场景里没有 {body} body")
+    quat = np.zeros(4)
+    mujoco.mju_mat2Quat(quat, np.asarray(T[:3, :3], dtype=float).flatten())
+    model.body_pos[bid] = T[:3, 3]
+    model.body_quat[bid] = quat
+
+
 def _find_repo_config(share: str, name: str = "sim.yaml") -> str:
     """从 install/sim/share/sim 往上找仓库根的 config/<name>; 找不到就返回 cwd 下的猜测。
 
@@ -156,44 +171,45 @@ class SimNode(Node):
         self._F0 = _mat_from_flat(mount.get("line_link_T_arm_base"))
         self._C = _mat_from_flat(mount.get("frame6_T_link6"))
 
+        # 站体 = O_frame (静态, 覆写 pos/quat) 下的 exchange_station (E), E 带 6 个规则关节 level_*,
+        # qpos 直接是规则 (x,y,z m, θ,φ,α rad), 见 exchange_station.xml 文件头。
+        for name in ("O_frame", "exchange_station"):
+            if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, name) < 0:
+                raise RuntimeError(f"场景里没有 {name} body (exchange_station.xml 要新版, scene.xml 要 attach O_frame)")
+        level_adr = [int(m.jnt_qposadr[m.joint(f"level_{k}").id]) for k in LEVEL_KEYS]
+
         explicit = cfg.get("pose_xyz_rpy")
         rmuc = cfg.get("rmuc", {}) or {}
-        if explicit:
-            world_T_station = np.eye(4)
-            world_T_station[:3, 3] = np.asarray(explicit[:3], dtype=float)
-            world_T_station[:3, :3] = _rpy_to_mat(*[float(v) for v in explicit[3:6]])
-        elif rmuc.get("enabled"):
-            world_T_station = self._station_from_rmuc(rmuc)
+        use_rmuc = bool(rmuc.get("enabled")) and not explicit
+        if use_rmuc:
+            world_T_O, q_level, expected = self._station_from_rmuc(rmuc, level_adr)
         else:
-            world_T_station = self._station_from_joint(
-                np.asarray(cfg.get("from_joint") or np.zeros(6), dtype=float))
+            # 任意站姿 (调试 / 演示用, 不保证落在三级范围): 关节停在 qpos0 (= 规则初始位姿),
+            # 反推 O_frame 让 E 落到目标位姿。 此时 O_frame 只是个挂点, 不是规则的装配坐标系。
+            if explicit:
+                expected = np.eye(4)
+                expected[:3, 3] = np.asarray(explicit[:3], dtype=float)
+                expected[:3, :3] = _rpy_to_mat(*[float(v) for v in explicit[3:6]])
+            else:
+                expected = self._station_from_joint(
+                    np.asarray(cfg.get("from_joint") or np.zeros(6), dtype=float))
+            q_level = m.qpos0[level_adr].copy()
+            world_T_O = expected @ np.linalg.inv(self._O_T_station_at_qpos0())
 
-        # 覆写静态 body 的 pos/quat (静态 body 的 xpos 每次 mj_forward 由 model 算出)
-        bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "exchange_station")
-        if bid < 0:
-            raise RuntimeError("场景里没有 exchange_station body")
-        quat = np.zeros(4)
-        mujoco.mju_mat2Quat(quat, world_T_station[:3, :3].flatten())
         with self.engine.lock:
-            m.body_pos[bid] = world_T_station[:3, 3]
-            m.body_quat[bid] = quat
+            _set_body_pose(m, "O_frame", world_T_O)
+            if use_rmuc:
+                # 底座平台只在 RMUC 摆法下有意义 (它就是 O 系的实体)
+                _set_body_pose(m, "assembly_platform", world_T_O)
+            d.qpos[level_adr] = q_level
+            d.qvel[[int(m.jnt_dofadr[m.joint(f"level_{k}").id]) for k in LEVEL_KEYS]] = 0.0
             mujoco.mj_forward(m, d)
+            world_T_station = _pose_of(d, "exchange_station")
 
-             # 摆底座平台 (只有 RMUC 摆法才有 O 系) ↓↓↓
-        if rmuc.get("enabled") and not explicit:
-            with self.engine.lock:
-                world_T_base = _pose_of(self.engine.data, "root")
-            world_T_O = world_T_base @ np.linalg.inv(
-                base_in_O(rmuc["chassis_in_O"], float(world_T_base[2, 3])))
-            pid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "assembly_platform")
-            if pid < 0:
-                raise RuntimeError("场景里没有 assembly_platform body")
-            pquat = np.zeros(4)
-            mujoco.mju_mat2Quat(pquat, world_T_O[:3, :3].flatten())
-            with self.engine.lock:
-                m.body_pos[pid] = world_T_O[:3, 3]
-                m.body_quat[pid] = pquat
-                mujoco.mj_forward(m, d)
+        # 自检: 关节链摆出来的 E 与 station_pose.py 的规则换算 / 显式目标一致
+        err = float(np.abs(world_T_station - expected).max())
+        if err > 1e-6:
+            self.get_logger().warn(f"站体位姿与预期差 {err:.2e} (关节链和 station_pose.py 对不上?)")
 
         self._world_T_station = world_T_station
         self._station_pub = None
@@ -210,23 +226,44 @@ class SimNode(Node):
             f"相对 arm_base {np.round(rel[:3, 3], 4).tolist()} "
             f"(距离 {np.linalg.norm(rel[:3, 3]):.3f} m)")
 
-    def _station_from_rmuc(self, rmuc: dict) -> np.ndarray:
-        """按 RMUC2026 规则的科技核心位姿 + 底盘在装配坐标系里的摆放, 算站体 world 位姿。
+    def _station_from_rmuc(self, rmuc: dict, level_adr: list[int]):
+        """按 RMUC2026 规则的科技核心位姿 + 底盘在装配坐标系里的摆放, 算 O 系 world 位姿与 6 个关节值。
 
-        底盘焊在 world, 所以反过来摆站体: world_T_station = world_T_base @ base_T_station。
+        底盘焊在 world, 所以反过来摆 O 系: world_T_O = world_T_base @ inv(O_T_base)。
         地面 = world z 0 = 机器人所站的装配区地面 (规则 z 是相对它量的)。
+        返回 (world_T_O, level 关节 qpos, 按 station_pose.py 算的站体 world 位姿 —— 自检用)。
         """
-        pose = dict(zip(("x", "y", "z", "theta", "phi", "alpha"), (float(v) for v in rmuc["pose"])))
+        m = self.engine.model
+        pose = dict(zip(LEVEL_KEYS, (float(v) for v in rmuc["pose"])))
         for problem in check_level3(pose):
-            self.get_logger().warn(f"station.rmuc.pose 不是三级难度合规位姿: {problem}")
+            self.get_logger().warn(f"station.rmuc.pose 不是三级难度合规位姿: {problem} (关节会夹到范围内)")
+        q = np.array([pose["x"] / 1000.0, pose["y"] / 1000.0, pose["z"] / 1000.0,
+                      *np.deg2rad([pose["theta"], pose["phi"], pose["alpha"]])])
+        ids = [m.joint(f"level_{k}").id for k in LEVEL_KEYS]
+        q = np.clip(q, m.jnt_range[ids, 0], m.jnt_range[ids, 1])
+        # 自检拿夹过的位姿比 (否则越界时必报"对不上")
+        pose = dict(zip(LEVEL_KEYS, [*(q[:3] * 1000.0), *np.rad2deg(q[3:])]))
+
         with self.engine.lock:
             world_T_base = _pose_of(self.engine.data, "root")
         base_height = float(world_T_base[2, 3])
-        world_T_station = world_T_base @ base_T_station(pose, rmuc["chassis_in_O"], base_height)
+        world_T_O = world_T_base @ np.linalg.inv(base_in_O(rmuc["chassis_in_O"], base_height))
+        expected = world_T_base @ base_T_station(pose, rmuc["chassis_in_O"], base_height)
         self.get_logger().info(
             f"站体位姿: pose(x,y,z mm / θ,φ,α °)={list(rmuc['pose'])} "
             f"底盘在装配坐标系 (x,y m, yaw °)={list(rmuc['chassis_in_O'])}")
-        return world_T_station
+        return world_T_O, q, expected
+
+    def _O_T_station_at_qpos0(self) -> np.ndarray:
+        """关节停在 qpos0 (= ref, 实际位移/转角全 0) 时 E 在 O 下的位姿 = xml 里 exchange_station 的 pos/quat。"""
+        m = self.engine.model
+        bid = m.body("exchange_station").id
+        T = np.eye(4)
+        rot = np.zeros(9)
+        mujoco.mju_quat2Mat(rot, m.body_quat[bid])
+        T[:3, :3] = rot.reshape(3, 3)
+        T[:3, 3] = m.body_pos[bid]
+        return T
 
     def _station_from_joint(self, q: np.ndarray) -> np.ndarray:
         """用一组演示关节角做 FK, 取那一刻的 TCP 位姿当站体系。

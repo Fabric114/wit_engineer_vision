@@ -27,7 +27,8 @@
       <geom name="assembly_platform_geom" type="box" size="0.75 0.75 0.075" pos="-0.75 0 0.075"
           rgba="0.35 0.35 0.35 1" contype="0" conaffinity="0"/>
     </body>
-    <attach model="exchange_station" body="exchange_station" prefix=""/>
+    <!-- 挂 O_frame (装配坐标系) 整棵子树, E = exchange_station 在它下面带 6 个规则关节 -->
+    <attach model="exchange_station" body="O_frame" prefix=""/>
   </worldbody>
 
   <!-- 排除"底盘 <-> 臂各节"的接触. -->
