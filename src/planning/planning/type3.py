@@ -6,17 +6,19 @@
 流形"运动 —— 也就是只允许 沿轴向进给 / 滑动 / 两个方向的小旋转 这几种受约束
 的动作。 本文件负责把这样一段装配动作规划成一条可执行的关节轨迹。
 
-【它的整体流程 (读懂这 5 步就懂了 type3)】
+【它的整体流程 (读懂这 6 步就懂了 type3)】
   1. 把装配动作离散成一串任务空间位姿 (AssemblyState -> 末端目标位姿序列);
-  2. 对每个位姿, 绕插入轴在一圈 roll 角上采样, 每个 roll 用解析 IK 解出候选
+  2. 对每个位姿, 绕插入轴在一圈 roll 角上采样, 每个 roll 按 arm.ik_type 用 IK 解出候选
      关节配置 (这就形成了 viterbi.py 里说的"分层网格": 层=路径点, 节点=候选);
   3. (可选) 用碰撞检测给每个候选打分/过滤;
   4. 用 Viterbi 在这些候选里选出一条平滑、代价最小的关节序列;
   5. 若严格解不出来, 用 scipy 最小二乘 (least_squares) "尽力修复", 找一个
      尽量满足约束的近似解; 残差超 best_ik.max_position_error_m / max_axis_error_deg
      的修复点一律判失败 (sigma 只是权重, 不是验收阈值)。
-  6. 首个路点必须与实测起点 initial_joints 衔接: 差值 ≤ start_joint_tolerance_rad
+  6. 首个路点必须与实测起点 initial_joints 衔接: 差值 ≥ 1e-9 且 ≤ start_joint_tolerance_rad
      时在前面插入 initial 作为第 0 点, 否则判失败。
+  另外两条硬逻辑: 相邻路点单轴跳变 > joint_path.max_joint_step_rad 的边直接不可走;
+  末端 continuation 未传时整段跳过 (planning_node 从不传, 生产不可达)。
   最后再做时间参数化 (trajectory.py) 就得到可执行轨迹。
 
 【要懂的概念】

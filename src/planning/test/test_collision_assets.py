@@ -2,8 +2,9 @@
 """test_collision_assets.py — 站体碰撞网格能加载, 且碰撞判定与精确距离一致。
 
 站体 .obj 在 src/runtime/sim/model/exchange_station/ (config 的 collision.station.asset_dir)。
-这个测试防的是"资产又丢了": planning_node 构不出碰撞模型时只打 error 日志然后关掉碰撞,
-不会让任何东西失败, 所以得有一条测试守着。
+这个测试防的是资产丢失/损坏。 注意 planning_node 现在**不会**静默关碰撞:
+碰撞开着而模型构不出来时直接抛异常、节点起不来; 只有显式 `collision.enabled:=false`
+才关, 且结果带 UNCHECKED 标记。
 """
 
 from __future__ import annotations

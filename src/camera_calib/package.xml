@@ -3,7 +3,7 @@
 <package format="3">
   <name>camera_calib</name>
   <version>0.0.1</version>
-  <description>相机标定: 棋盘格/ChArUco/圆点板 内参标定 + camera->arm_base 手眼外参标定</description>
+  <description>相机标定: 棋盘格/ChArUco/圆点板 内参标定 + camera->arm_base 手眼外参库函数 (手眼暂无 CLI 入口)</description>
   <maintainer email="shaozi2233@gmail.com">sxh</maintainer>
   <license>MIT</license>
 

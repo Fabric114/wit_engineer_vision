@@ -72,11 +72,11 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     默认读**工作区根** ``config/planning.yaml`` (即 wit_engineer_vision/config/),
     与 camera/detector 等包一致 —— 全仓库配置集中一处, 一处一个真值。 向上查找同时含
-    ``config/`` 与 ``src/`` 的工作区根 (源码运行/拷贝安装都能命中); 找不到 (如脱离
-    源码树的独立安装) 时退回包内自带的 ``config/planning.yaml`` 兜底。
-    也可显式传入外部 YAML 覆盖。
+    ``config/`` 与 ``src/`` 的工作区根 (源码运行/拷贝安装都能命中)。 包内没有兜底副本
+    (``planning/config/planning.yaml`` 不存在): 脱离源码树时必须显式传 ``path``,
+    否则在下面显式 ``FileNotFoundError``，不会静默用旧配置。
     """
-    # 显式路径优先; 否则先用工作区根 config/planning.yaml, 不存在再退回包内自带配置。
+    # 显式路径优先; 否则用工作区根 config/planning.yaml; 包内没有兜底副本, 缺失即显式报错。
     if path is not None:
         config_path = Path(path)
     else:

@@ -6,7 +6,7 @@
 - MuJoCo 从 ``rm26_arm.xml`` (MJCF) 加载, 它是与 URDF 独立的另一份模型文件, 拿它
   当"标准答案": 给一组关节角, 让 MuJoCo 正向求解, 读 ``link_6`` 相对 ``line_link``
   的真实位姿。
-- 被测对象: ``config/planning.example.yaml`` 里的 ``arm.dh``, 经
+- 被测对象: 仓库根 ``config/planning.yaml`` 里的 ``arm.dh`` (经 ``load_config()`` 读取), 经
   ``ArmModel.forward_kinematics`` 算出的位姿。 arm_model 的 FK 在 arm_base 系;
   要和 MuJoCo 的 link_6 对上, 需要两个与"DH 参数"无关、只描述"DH 链怎么挂到机器人上"
   的安装常量:

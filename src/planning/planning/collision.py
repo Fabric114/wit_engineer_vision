@@ -1,5 +1,6 @@
-# collision.py — 碰撞检测: 机械臂胶囊体 vs 兑换站网格 (hpp-fcl)。
-# 碰撞检测
+# collision.py — 碰撞检测: 机械臂胶囊体 vs 场景网格 (hpp-fcl)。
+# 场景由 CollisionModel.scene_groups 组装: 站体 + 桩体 + 车体(底盘/滑台/轮) + 地面;
+# 只做胶囊↔网格, 不做臂自碰撞。
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -389,7 +390,7 @@ class CollisionChecker:
                 _rotations_from_z_directions(point_to - point_from),
             )
 
-    # 核心检测: 返回 (每个构型是否碰撞 (B,), 到站体的距离下界 (B,), 碰撞为 0)。
+    # 核心检测: 返回 (每个构型是否碰撞 (B,), 到**全部景组**的最小距离下界 (B,), 碰撞为 0)。
     def _evaluate(
         self,
         joints: np.ndarray,

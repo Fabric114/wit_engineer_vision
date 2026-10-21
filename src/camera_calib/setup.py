@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer="sxh",
     maintainer_email="shaozi2233@gmail.com",
-    description="相机标定: 棋盘格/ChArUco/圆点板 内参标定 + camera->arm_base 手眼外参标定",
+    description="相机标定: 棋盘格/ChArUco/圆点板 内参标定 + camera->arm_base 手眼外参库函数 (手眼暂无 CLI 入口)",
     license="MIT",
     entry_points={
         "console_scripts": [

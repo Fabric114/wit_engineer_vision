@@ -40,9 +40,10 @@ station:
   publish_pose: true                # 是否发真值站姿 /vision/exchange_pose
   pose_hz: 5.0
   # 站体位姿的来法: 用这组"插到底"的演示关节角做 MuJoCo FK, 取 TCP 位姿当站体系
-  # (与 planning 的约定一致: 站体系 = 完全插入时的 TCP, x 是插入轴, 待插位姿在 +x 一侧;
+  # (与 planning 的约定一致: 站体系 = 完全插入时的 TCP = ring 点, +x 指向机器人 (退出方向),
+  # 待插位姿在 +x 一侧, 插入沿 -x;
   # 工具偏置读 planning 的 arm.tool.tcp_offset_6_tcp)。
-  # 2026-10-15 换成这组 (assembly_demo.py 用): 插入轴水平; 在装配分支 0 (planning.exchange.ik_branches)
+  # 2026-10-15 换成这组 (只作备用/测试审计站姿): 插入轴水平; 在装配分支 0 (planning.exchange.ik_branches)
   # 上 "退开 0.25 m -> 插到底 -> 滑动 0.104 m" 全程有解、相邻路点单轴变化 <= 0.22 rad, 碰撞检测 (站体 +
   # 桩体 + 车体, cc_link6 vs 桩体豁免) 下 BIT* 接近 + 滑动都过稠密复检 (离线验证)。 代价: 站体 z 轴是水平的
   # (站体侧躺, 滑动方向水平) —— 随机搜了 2500 组"站体 z 竖直"的站姿, 在当前 TCP / 6 胶囊 / 车体下
@@ -59,8 +60,8 @@ station:
   # 2026-10-17 离线搜索 (line = 0.1, 分支 0, 碰撞开) 选的这组: 插到底后沿站体 z 平移满 104 mm,
   #       插入 + 平移稠密复检胶囊膨胀 2 cm 无碰撞; 最常规的 θ=0 φ=90 α=0 只能推 40~45 mm (腕部撞科技核心碰撞体,
   #       规划里科技核心不随平移移动, 偏保守)。 底盘四角离底座正面 0.02 m。
-  #       assembly_demo.py 用的是 from_joint 那组, 跑它要 --ros-args -p station.rmuc.enabled:=false;
-  #       assembly_demo_1.py 用这组。
+  #       from_joint 只是备用 (planning 测试里当审计站姿); 两个 assembly demo 都由 /vision/exchange_pose
+  #       读 sim 的站姿, 与用哪组无关, 不需要再传 station.rmuc.enabled:=false。
   rmuc:
     enabled: true
     pose: [0.0, 200.0, 700.0, 0.0, 60.0, 45.0]

@@ -1,4 +1,5 @@
-type: video # (daheng/hik/video）
+# 相机后端: hik = 最终方案 (2026-10-20 确认); d435i 是后续备选, 尚未写代码; video 仅离线演示。
+type: hik # (hik/daheng/video)
 # 共享内存发布（供 detector/solver 零拷贝取帧）；区域名/槽数见 config/shm.yaml, 槽位分辨率取当前相机的 width/height
 publish_shm: true
 shm_region: ""   # 空 = 用 shm 默认区域（wit_engineer_image）

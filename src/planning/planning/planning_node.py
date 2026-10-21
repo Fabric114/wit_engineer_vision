@@ -25,7 +25,7 @@ UNCHECKED_TAG。
 约 0.1 ms)。 装配段一次请求要解 path_samples × roll 数 次 IK, 批量一次解完;
 ik_type=numeric 时约 16 ms/次, 默认 10 × 72 ≈ 15 s。
 
-超参默认全部来自 config/planning.example.yaml, 可用 ROS 参数逐项覆盖:
+超参默认全部来自仓库根 config/planning.yaml, 可用 ROS 参数逐项覆盖:
     ros2 run planning planning_node --ros-args -p assembly.path_samples:=6
 """
 
@@ -190,7 +190,7 @@ class PlanningNode(Node):
     def __init__(self) -> None:
         super().__init__("planning_node")
 
-        # config 默认来自 config/planning.example.yaml; 按用途取出各子段
+        # config 默认来自仓库根 config/planning.yaml; 按用途取出各子段
         config = load_config()
         arm_cfg = config["arm"]
         exchange_cfg = config["planning"]["exchange"]
@@ -588,7 +588,8 @@ class PlanningNode(Node):
             f"roll_count={len(self.type3_planner.rolls)}"
         )
 
-        # 装配段检查器不放局部桩体 (原因见 _make_collision_checker), 碰撞关闭时为 None
+        # 装配段检查器**放**局部桩体, 但对 assembly_allowed_contact 里的胶囊豁免
+        # (原因见 _make_collision_checker); 碰撞关闭时为 None
         collision_checker = self._make_collision_checker(station, stage="assembly")
         plan = self.type3_planner.plan(
             path,

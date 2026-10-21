@@ -1,6 +1,7 @@
 # 视觉检测出的关键点观测 (2D 像素 + 置信度), 数据驱动: schema 决定点的语义
 std_msgs/Header header
-string schema          # 对应 pnp_solver 包 config/keypoint_schema.yaml 里的一个条目, 如 "exchange_station"
+string schema          # 对应仓库根 config/keypoint_schema.yaml 里的一个条目, 如 "exchange_station"
+                       # (由 solver 包的 pnp_node 读取; 不是 pnp_solver 包)
                        # 未来加 "launcher" 只需新增 schema + 权重, 不改消息
 uint16 class_id
 float32[] u            # 像素 x

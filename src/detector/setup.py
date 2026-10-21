@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer="sxh",
     maintainer_email="shaozi2233@gmail.com",
-    description="关键点检测 (OpenVINO): RM2026 yolopose 单阶段 或 yolo+litehrnet 两阶段, 出 KeypointObservationArray",
+    description="兑换站关键点检测 (OpenVINO yolo-pose, tc) + 矿石检测 (eu), 发布 KeypointObservation",
     license="MIT",
     entry_points={
         "console_scripts": [

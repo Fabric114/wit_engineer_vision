@@ -1,9 +1,12 @@
-# camera_optical -> arm_base 外参, 以及位姿输出参数。
+# camera -> arm_base 外参, 以及位姿输出参数。
 #
-# 这里只放外参: 内参在 camera 包 config/camera_info.yaml (由 camera_calib 标出来),
-# 3D 模型点在 pnp_solver 包 config/keypoint_schema.yaml。
-# 外参由 camera_calib 的手眼标定生成 (camera_calib/config/hand_eye.yaml -> extrinsic.yaml),
-# 标完把 4x4 填到下面, 或用 extrinsic_file 直接指向标定输出。
+# ⛔ 2026-10-20: src/tf/ 仍是空壳 (两个模块各 3 行 docstring, 没有 main), 本文件
+# 目前没有任何代码读者; 下面的键是 tf 节点的设计草稿, 实现时按实际入口重写。
+#
+# 这里只放外参: 内参在仓库根 `config/camera_info.yaml` (由 camera_calib 标出来),
+# 3D 模型点在仓库根 `config/keypoint_schema.yaml`。
+# 外参由 camera_calib 的手眼标定生成 (config/hand_eye.yaml 的参数 ->
+# calibration/<时间戳>/ 下的标定产物), 标完把 4x4 填到下面, 或用 extrinsic_file 指过去。
 
 extrinsic_file: ""            # 留空则用下面的 arm_base_from_camera
 
@@ -16,8 +19,11 @@ arm_base_from_camera:
          0.0, 0.0, 1.0, 0.0,
          0.0, 0.0, 0.0, 1.0]
 
-# 坐标系名字 (与 README_PRE.md 第四节一致)
-camera_frame: "camera_optical"
+# 坐标系名字 (README_PRE.md 第六节「坐标系与单位约定」)
+# ⚠️ 现在 CameraInfo / detector / solver 实际发 frame_id="camera" (camera.yaml:27),
+# 文档与 hand_eye.py 又叫 camera_optical。 统一之前先用实际值 "camera",
+# 否则 tf 的 lookup_transform 永远对不上 (见 todo.md §2.2)。
+camera_frame: "camera"
 base_frame: "arm_base"
 
 publish_static_tf: true       # 把外参也发成 static TF, rviz 里能直接看

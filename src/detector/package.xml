@@ -3,7 +3,7 @@
 <package format="3">
   <name>detector</name>
   <version>0.0.1</version>
-  <description>科技核心/能量单元关键点检测 (OpenVINO): yolopose 单阶段，出 KeypointObservationArray</description>
+  <description>科技核心/能量单元检测 (OpenVINO): tc = yolo-pose 关键点，eu = 矿石检测；发布 KeypointObservation</description>
   <maintainer email="shaozi2233@gmail.com">sxh</maintainer>
   <license>MIT</license>
 

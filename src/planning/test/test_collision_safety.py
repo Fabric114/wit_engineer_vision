@@ -1,9 +1,9 @@
-# test_collision_safety.py — 稠密轨迹碰撞复检、桩体网格入场景、装配场景已知缺口的回归。
+# test_collision_safety.py — 稠密轨迹碰撞复检、桩体入场景、装配段允许接触规则的回归。
 """碰撞安全回归 (第二轮, docs/audits/2026-10-09/collision-fix-spec.md)。
 
 1. 稠密轨迹逐点碰撞复检 (validate_trajectory 的 collision_checker);
 2. 局部桩体网格确实能进入场景;
-3. 装配场景不含桩体 —— 锁定"已知缺口"的现状。
+3. 装配段含桩体, 但只对 assembly_allowed_contact (cc_link6 / cc_ore) 豁免; 其余胶囊照查。
 """
 
 from __future__ import annotations

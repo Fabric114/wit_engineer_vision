@@ -1,7 +1,7 @@
 """Minimal Hikrobot (MVS / MvImport) camera driver.
 
 接口与 daheng_camera.DahengCamera 保持一致，供 camera_node 无差别调用。
-底层调用海康 MVS Python SDK（src/camera_pkg/MvImport），抓取原始 Bayer8
+底层调用海康 MVS Python SDK（src/camera/MvImport），抓取原始 Bayer8
 数据后用 OpenCV 转成 BGR，转换约定与 daheng 驱动一致。
 """
 
