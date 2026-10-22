@@ -1,11 +1,23 @@
 import numpy as np
 import pytest
 
-from solver.pnp_node import _FrameBuffer, _camera_info_to_arrays, _observation_to_arrays
+from types import SimpleNamespace
+
+from solver.extrinsic import matrix_from_pose
+from solver.pnp_node import (
+    _FrameBuffer,
+    _camera_info_to_arrays,
+    _config_dir,
+    _fill_pose,
+    _fill_transform,
+    _load_extrinsic_config,
+    _matrix_from_transform_msg,
+    _observation_to_arrays,
+)
 
 
 class Header:
-    frame_id = "camera_optical"
+    frame_id = "camera"
 
 
 class CameraInfo:
@@ -67,3 +79,40 @@ def test_camera_info_conversion_rejects_bad_intrinsics():
     message.k = [1.0] * 8
     with pytest.raises(ValueError, match="K"):
         _camera_info_to_arrays(message)
+
+
+def _vec():
+    return SimpleNamespace(x=0.0, y=0.0, z=0.0)
+
+
+def _quat():
+    return SimpleNamespace(w=0.0, x=0.0, y=0.0, z=0.0)
+
+
+def test_pose_and_transform_fill_by_field_name_round_trip():
+    q = np.array([0.7, -0.1, 0.5, 0.3])
+    T = matrix_from_pose([0.4, -0.1, 0.25], q / np.linalg.norm(q))
+
+    pose = SimpleNamespace(position=_vec(), orientation=_quat())
+    _fill_pose(pose, T)
+    back = matrix_from_pose((pose.position.x, pose.position.y, pose.position.z),
+                            (pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z))
+    np.testing.assert_allclose(back, T, atol=1e-9)
+
+    transform = SimpleNamespace(translation=_vec(), rotation=_quat())
+    _fill_transform(transform, T)
+    np.testing.assert_allclose(_matrix_from_transform_msg(transform), T, atol=1e-9)
+
+
+def test_repo_extrinsic_config_has_frames():
+    cfg, T = _load_extrinsic_config(_config_dir() / "camera_extrinsic.yaml")
+    assert (cfg["camera_frame"], cfg["base_frame"], cfg["station_frame"]) == ("camera", "arm_base", "exchange_station")
+    assert T.shape == (4, 4)
+
+
+def test_extrinsic_config_requires_frames(tmp_path):
+    path = tmp_path / "extrinsic.yaml"
+    path.write_text("arm_base_from_camera: {rows: 4, cols: 4, data: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]}\n"
+                    "camera_frame: camera\nbase_frame: arm_base\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="station_frame"):
+        _load_extrinsic_config(path)

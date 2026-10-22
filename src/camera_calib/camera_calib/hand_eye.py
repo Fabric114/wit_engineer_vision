@@ -148,7 +148,7 @@ def eye_to_hand_residuals(
 
 
 def save_extrinsic(base_from_camera, path, note: str = "") -> str:
-    """写 vision_tf 直接读的外参文件 (4x4, 米)。"""
+    """写 pnp_node 直接读的外参文件 (4x4, 米; 见 config/camera_extrinsic.yaml)。"""
     from pathlib import Path
 
     import yaml
@@ -157,7 +157,7 @@ def save_extrinsic(base_from_camera, path, note: str = "") -> str:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     document = {
-        "note": note or "camera_optical -> arm_base, 4x4 齐次矩阵, 单位米",
+        "note": note or "T_arm_base_camera (camera -> arm_base), 4x4 齐次矩阵, 单位米",
         "arm_base_from_camera": {
             "rows": 4,
             "cols": 4,

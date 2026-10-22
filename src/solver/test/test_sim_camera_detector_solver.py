@@ -32,7 +32,7 @@ def test_simulated_camera_detector_solver_round_trip():
     detected = projected.copy()
     result = PnPEstimator(reprojection_error_threshold_px=1.0).estimate(points, detected, K, D)
     assert result.valid
-    np.testing.assert_allclose(result.T_camera_station_model, transform, atol=2e-3)
+    np.testing.assert_allclose(result.T_camera_exchange_station, transform, atol=2e-3)
 
 
 def test_permuted_detector_order_is_not_accepted_as_schema_order():

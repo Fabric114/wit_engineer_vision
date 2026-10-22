@@ -1,0 +1,23 @@
+# camera -> arm_base 外参 (pnp_node 读; 2026-10-22 起 tf 包并进 solver)。
+#
+# 这里只放外参和坐标系名: 内参在 `config/camera_info.yaml` (camera_calib 标出来),
+# 3D 模型点在 `config/keypoint_schema.yaml`。
+# 外参由 camera_calib 的手眼标定生成 (config/hand_eye.yaml 的参数 ->
+# calibration/<时间戳>/extrinsic.yaml), 标完用 extrinsic_file 指过去, 或把 4x4 填到下面。
+
+extrinsic_file: ""            # 非空优先; 相对路径相对本目录 (config/)
+
+# T_arm_base_camera, 行优先, 米。
+# TODO: 单位阵只是占位。pnp_node 启动时会告警, 但 /vision/exchange_pose 照发 (数值无意义)。
+arm_base_from_camera:
+  rows: 4
+  cols: 4
+  data: [1.0, 0.0, 0.0, 0.0,
+         0.0, 1.0, 0.0, 0.0,
+         0.0, 0.0, 1.0, 0.0,
+         0.0, 0.0, 0.0, 1.0]
+
+# 坐标系名。camera_frame 必须等于 CameraInfo.header.frame_id (camera.yaml 的 frame_id)。
+camera_frame: "camera"
+base_frame: "arm_base"
+station_frame: "exchange_station"

@@ -208,7 +208,7 @@ def test_capsules_are_not_over_inflated(_vertices):
 # helper: MJCF 里 energy_unit geom (挂在 link_6 上的矿石) 的顶点, 换到 DH 第 6 系。
 def _ore_vertices_in_dh6() -> np.ndarray:
     mujoco = pytest.importorskip("mujoco")
-    from scipy.spatial.transform import Rotation
+    from planning import rotations_from_quaternions
 
     mjcf = Path(__file__).resolve().parents[2] / "runtime/sim/model/rm26_engineer_description/rm26_arm.xml"
     if not mjcf.is_file():
@@ -218,8 +218,8 @@ def _ore_vertices_in_dh6() -> np.ndarray:
     assert model.geom_bodyid[geom.id] == model.body("link_6").id
     mesh = model.geom_dataid[geom.id]
     start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
-    w, x, y, z = model.geom_quat[geom.id]
-    rotation = Rotation.from_quat([x, y, z, w]).as_matrix()
+    # MuJoCo 的 geom_quat 就是 [w, x, y, z], 和全库约定一致, 直接喂统一入口, 不手动重排
+    rotation = rotations_from_quaternions(np.asarray(model.geom_quat[geom.id])[None, :])[0]
     in_link6 = model.mesh_vert[start:start + count] @ rotation.T + model.geom_pos[geom.id]
     _, frame6_T_link6 = _build_mount_constants()
     return in_link6 @ frame6_T_link6[:3, :3].T + frame6_T_link6[:3, 3]

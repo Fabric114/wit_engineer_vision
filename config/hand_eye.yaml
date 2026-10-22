@@ -16,5 +16,5 @@ base_from_board:
 poses_required: 12
 min_rotation_between_poses_deg: 8.0   # 姿态之间旋转差太小会让解退化
 
-# 输出: 写成 vision_tf 直接读的 extrinsic.yaml
+# 输出: 写成 pnp_node 直接读的 extrinsic.yaml (config/camera_extrinsic.yaml 的 extrinsic_file 指过来)
 output_path: ""               # 留空 = ./calibration/<时间戳>/extrinsic.yaml

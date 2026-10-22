@@ -26,7 +26,7 @@ def schema():
 
 
 def _pose(tx=0.02, ty=-0.05, tz=0.9):
-    # 相机光轴大致沿 station_model 的 +X, 兑换面朝向相机。
+    # 相机光轴大致沿 exchange_station 的 +X, 兑换面朝向相机。
     rotation = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, -1.0], [1.0, 0.0, 0.0]])
     rvec, _ = cv2.Rodrigues(rotation @ cv2.Rodrigues(np.array([0.05, -0.08, 0.03]))[0])
     return rvec, np.array([[tx], [ty], [tz]])
@@ -61,7 +61,7 @@ def test_merged_candidate_recovers_pose(schema):
     assert solution.estimate is not None, solution.reasons
     assert solution.candidate.sources == (1, 0)
     assert solution.estimate.inlier_mask.all()
-    np.testing.assert_allclose(solution.estimate.T_camera_station_model[:3, 3], tvec[:, 0], atol=2e-3)
+    np.testing.assert_allclose(solution.estimate.T_camera_exchange_station[:3, 3], tvec[:, 0], atol=2e-3)
 
 
 def test_single_part_falls_back_to_available_points(schema):
@@ -73,7 +73,7 @@ def test_single_part_falls_back_to_available_points(schema):
     assert solution.estimate is not None, solution.reasons
     assert solution.candidate.sources == (None, 0)
     assert not solution.estimate.inlier_mask[:5].any()
-    np.testing.assert_allclose(solution.estimate.T_camera_station_model[:3, 3], tvec[:, 0], atol=5e-3)
+    np.testing.assert_allclose(solution.estimate.T_camera_exchange_station[:3, 3], tvec[:, 0], atol=5e-3)
 
 
 def test_pairs_consistent_instances_when_two_stations_are_visible(schema):

@@ -8,14 +8,14 @@ import numpy as np
 
 @dataclass(frozen=True)
 class PoseEstimate:
-    T_camera_station_model: np.ndarray
+    T_camera_exchange_station: np.ndarray
     reprojection_error_px: float
     inlier_mask: np.ndarray
     valid: bool
     reason: str
 
     def __post_init__(self) -> None:
-        transform = np.asarray(self.T_camera_station_model, dtype=np.float64)
+        transform = np.asarray(self.T_camera_exchange_station, dtype=np.float64)
         mask = np.asarray(self.inlier_mask, dtype=bool)
         if transform.shape != (4, 4):
             raise ValueError("pose transform must have shape (4, 4)")
@@ -23,7 +23,7 @@ class PoseEstimate:
         mask = np.ascontiguousarray(mask)
         transform.setflags(write=False)
         mask.setflags(write=False)
-        object.__setattr__(self, "T_camera_station_model", transform)
+        object.__setattr__(self, "T_camera_exchange_station", transform)
         object.__setattr__(self, "inlier_mask", mask)
 
 

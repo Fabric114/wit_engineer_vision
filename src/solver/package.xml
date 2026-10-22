@@ -3,7 +3,7 @@
 <package format="3">
   <name>solver</name>
   <version>0.0.1</version>
-  <description>PnP 解算: 关键点 schema 映射 + solvePnPRansac + 滤波, 出相机系兑换站 6D 位姿</description>
+  <description>PnP 解算: 关键点 schema 映射 + solvePnPRansac + 滤波, 出相机系 + arm_base 系 (× 外参) 兑换站 6D 位姿</description>
   <maintainer email="shaozi2233@gmail.com">sxh</maintainer>
   <license>MIT</license>
 
@@ -13,6 +13,7 @@
   <depend>interfaces</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
 
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>

@@ -25,7 +25,7 @@ def test_synthetic_projection_recovers_pose(camera_data):
     )
     assert result.valid
     assert result.reprojection_error_px < 1.0
-    np.testing.assert_allclose(result.T_camera_station_model[:3, 3], expected_t, atol=2e-3)
+    np.testing.assert_allclose(result.T_camera_exchange_station[:3, 3], expected_t, atol=2e-3)
 
 
 def test_validation_failures_are_diagnostic(camera_data):
@@ -73,7 +73,7 @@ def test_accepts_coplanar_geometry(camera_data):
     pixels, _ = cv2.projectPoints(points, np.array([[0.1], [-0.08], [0.2]]), expected_t.reshape(3, 1), K, D)
     result = PnPEstimator(reprojection_error_threshold_px=1.0).estimate(points, pixels.reshape(-1, 2), K, D)
     assert result.valid, result.reason
-    np.testing.assert_allclose(result.T_camera_station_model[:3, 3], expected_t, atol=2e-3)
+    np.testing.assert_allclose(result.T_camera_exchange_station[:3, 3], expected_t, atol=2e-3)
 
 
 def test_rejects_collinear_geometry(camera_data):

@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer="sxh",
     maintainer_email="shaozi2233@gmail.com",
-    description="PnP 解算: 关键点 schema 映射 + solvePnPRansac + 滤波, 出相机系兑换站 6D 位姿",
+    description="PnP 解算: 关键点 schema 映射 + solvePnPRansac + 滤波, 出相机系 + arm_base 系 (× 外参) 兑换站 6D 位姿",
     license="MIT",
     entry_points={
         "console_scripts": [

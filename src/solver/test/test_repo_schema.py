@@ -41,4 +41,4 @@ def test_detector_schema_recovers_synthetic_pose():
     )
 
     assert result.valid, result.reason
-    np.testing.assert_allclose(result.T_camera_station_model[:3, 3], tvec[:, 0], atol=2e-3)
+    np.testing.assert_allclose(result.T_camera_exchange_station[:3, 3], tvec[:, 0], atol=2e-3)
