@@ -29,12 +29,12 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest src/planning/test -q
 
 | 包 | 不 source install | source ROS + install | 说明 |
 |---|---:|---:|---|
-| planning | 84 passed, 1 skipped | 94 passed | 10 个 node 用例需可写 `~/.ros` |
+| planning | 86 passed, 1 skipped | 105 passed | 10 个 node 用例需可写 `~/.ros` |
 | solver | 53 passed, 1 skipped | 53 passed, 1 skipped | skip 是真实相机门 |
 | shm | 9 passed | 9 passed | |
 | camera_calib | 28 passed | 28 passed | |
 | sim | 23 passed | 23 passed | 需 `PYTHONPATH=src/runtime/sim` |
-| **合计** | **197 passed, 1 skipped** | **207 passed, 1 skipped** | |
+| **合计** | **199 passed, 1 skipped** | **218 passed, 1 skipped** | |
 
 - 不要用 `-p no:anyio`：当前环境实测它不改变收集结果，且会和 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` 的用法混在一起。
 - 缺 `rclpy` / `interfaces` 时，`test_planning_node_collision.py` 只跳过该文件（1 skipped），不会中止整个目录。
