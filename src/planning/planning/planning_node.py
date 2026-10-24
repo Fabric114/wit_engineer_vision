@@ -51,7 +51,6 @@ from interfaces.msg import (
     AssemblyRequest,
     AssemblyResult,
 )
-from interfaces.msg import AssemblyState as AssemblyStateMsg
 
 # planning 纯算法库 (与 ROS 无关): 臂模型、type3 规划器、时间参数化、轨迹校验
 from planning import (
@@ -279,14 +278,8 @@ class PlanningNode(Node):
         # 流形上插值多少个状态: 直接决定 type3 建图的 IK 次数 (samples × roll 数)
         self.declare_parameter("assembly.path_samples", 10)
         self.assembly_path_samples = max(2, int(self.get_parameter("assembly.path_samples").value))
-        # 装配段的起点状态: 默认取几何里的插入行程, 即"沿站轴退开 insert_slide_mag 的待插位姿"
-        # —— 正好是接近段 target_pose 该给的那个点, 两段因此能首尾相接。
-        self.assembly_start_axial_m = self._declare_float(
-            "assembly.start_axial_m", geometry_cfg["insert_slide_mag"]
-        )
-        # goal.release=true 时给流形的释放位移 (m); 默认 0 表示几何上不动,
-        # 真正的吸盘/夹爪动作由执行侧 (gripper/arm_host) 负责。
-        self.assembly_release_m = self._declare_float("assembly.release_m", 0.0)
+        # 滑动段行程 (m): PATH_SLIDE 的终点、PATH_P 的起点
+        self.assembly_slide_m = float(geometry_cfg["slide_z_mag"])
         # type3 分层图按 roll 离散的步长 (deg), 决定 roll 层数
         self.assembly_roll_step_deg = self._declare_float(
             "assembly.roll_step_deg", joint_path_cfg["roll_sample_step_deg"]
@@ -372,7 +365,7 @@ class PlanningNode(Node):
             f"type3_ik_branch={ik_branches[0]} "
             f"roll_count={len(self.type3_planner.rolls)} "
             f"assembly_path_samples={self.assembly_path_samples} "
-            f"assembly_start_axial_m={self.assembly_start_axial_m:.4f} "
+            f"assembly_slide_m={self.assembly_slide_m:.4f} "
             f"approach_ik_branches={list(self.approach_ik_branches)}"
         )
 
@@ -590,6 +583,9 @@ class PlanningNode(Node):
         result.request_id = msg.request_id
         result.repaired_nodes = 0
         result.error_code = ""
+        result.path_name = msg.path_name
+        result.cost = float("inf")
+        result.selected_ik_branch = -1
         started = time.perf_counter()
         try:
             success, message = self._plan_assembly(msg, result)
@@ -603,46 +599,39 @@ class PlanningNode(Node):
         # 统一写 success/message, 按成败选日志级别, 最后发布
         result.success = success
         result.message = message
-        level = self.get_logger().info if success else self.get_logger().warning
-        level(
+        # 成败分两处调用: rclpy 按调用点缓存日志级别, 同一调用点换级别会抛 ValueError
+        summary = (
             f"装配段规划{'成功' if success else '失败'} "
             f"id={msg.request_id} "
+            f"path_name={int(msg.path_name)} "
             f"error_code={result.error_code} "
             f"repaired_nodes={result.repaired_nodes} "
             f"dense_steps={len(result.trajectory.points)} "
             f"elapsed_s={time.perf_counter() - started:.3f} "
             f"message={message}"
         )
+        if success:
+            self.get_logger().info(summary)
+        else:
+            self.get_logger().warning(summary)
         self.assembly_result_pub.publish(result)
 
     # 流程: 输入校验 -> 构造流形路径 -> type3 建图规划 -> 参数化 -> 校验 -> 填消息
     def _plan_assembly(self, msg: AssemblyRequest, result: AssemblyResult) -> tuple[bool, str]:
         """在装配流形上规划, 填好 result.trajectory, 返回 (是否成功, 说明)。"""
         self._check_frame(msg.header.frame_id, "AssemblyRequest.header")
-        # 输入解析: 起始关节角 (6,)、站位姿 4x4 (arm_base 系)、目标流形状态
+        # 输入解析: 起始关节角 (6,)、站位姿 4x4 (arm_base 系)、按 path_name 取固定路径
         start_joint = _joint_positions_from_joint_state(msg.initial_joint_state)
         station = _transform_from_pose_stamped(
             msg.station_pose_arm_base, "AssemblyRequest.station_pose_arm_base"
         )
-        goal_state = self._assembly_state(msg.goal)
-        # 起点: use_start=false 取"沿站轴退开 start_axial_m 的待插状态", 与接近段的落点衔接;
-        # use_start=true 取请求给的 start (如"已插到底"再接滑动段)。
-        # 终点由请求给定, 中间线性铺开 path_samples 个状态交给 type3 建图。
-        start_state = (
-            self._assembly_state(msg.start)
-            if bool(msg.use_start)
-            else AssemblyState(axial_offset_m=self.assembly_start_axial_m)
-        )
-        path = AssemblyPath.between(start_state, goal_state, samples=self.assembly_path_samples)
-        # 请求摘要日志: 角度类状态转 deg 显示
+        path, continuations = self._assembly_paths(int(msg.path_name))
         self.get_logger().info(
             "装配段请求 "
+            f"path_name={int(msg.path_name)} "
             f"start_joint={np.round(start_joint, 4).tolist()} "
             f"station_{_pose_summary(station)} "
-            f"goal=(axial={goal_state.axial_offset_m:.4f} slide={goal_state.slide_m:.4f} "
-            f"p={np.rad2deg(goal_state.p_angle_rad):.2f}deg "
-            f"q={np.rad2deg(goal_state.q_angle_rad):.2f}deg "
-            f"release={goal_state.release_m:.4f}) "
+            f"continuations={len(continuations)} "
             f"path_samples={self.assembly_path_samples} "
             f"roll_count={len(self.type3_planner.rolls)}"
         )
@@ -655,6 +644,7 @@ class PlanningNode(Node):
             station,
             initial_joints=start_joint,
             collision_checker=collision_checker,
+            terminal_continuations=continuations,
         )
         # 先打诊断再判成败, 失败时日志里能看出是 IK 不可达还是碰撞挡住
         self._log_assembly_diagnostics(plan)
@@ -689,21 +679,26 @@ class PlanningNode(Node):
             f"roll_deg={np.round(np.rad2deg(plan.rolls), 2).tolist()}"
         )
         result.error_code = ""
+        result.cost = float(plan.cost)
+        result.selected_roll = float(plan.rolls[-1])
+        result.selected_ik_branch = int(self.type3_planner.ik_branch)
         return True, f"{plan.message} {peaks}"
 
-    def _assembly_state(self, goal: AssemblyStateMsg) -> AssemblyState:
-        """interfaces/AssemblyState -> planning 的流形状态。
+    def _assembly_paths(self, path_name: int) -> tuple[AssemblyPath, tuple[AssemblyPath, ...]]:
+        """path_name -> (装配流形路径, 末端 continuation), 同 RM2026 _assembly_paths。
 
-        msg 里 release 是布尔 (吸盘要不要松), 流形几何要的是"释放位移";
-        用 ROS 参数 assembly.release_m 给这个位移, 默认 0 = 几何上不额外让开。
+        PATH_SLIDE: 插到底 -> slide_z_mag, 无 continuation;
+        PATH_P: 滑动终点 -> p=90°, continuation = Q 两条分支 (Task 4 接入)。
         """
-        # 单位: axial/slide/release 为 m, p/q 角为 rad (直接沿用消息字段, 未做换算)
-        return AssemblyState(
-            axial_offset_m=float(goal.axial),
-            slide_m=float(goal.slide),
-            p_angle_rad=float(goal.p_angle),
-            q_angle_rad=float(goal.q_angle),
-            release_m=self.assembly_release_m if bool(goal.release) else 0.0,
+        inserted = AssemblyState()
+        slid = AssemblyState(slide_m=self.assembly_slide_m)
+        if path_name == AssemblyRequest.PATH_SLIDE:
+            return AssemblyPath.between(inserted, slid, samples=self.assembly_path_samples), ()
+        if path_name == AssemblyRequest.PATH_P:
+            raise ValueError("PATH_P 尚未接入")
+        raise ValueError(
+            f"未知 path_name={path_name} (只支持 PATH_SLIDE={AssemblyRequest.PATH_SLIDE} / "
+            f"PATH_P={AssemblyRequest.PATH_P})"
         )
 
     def _log_assembly_diagnostics(self, plan) -> None:

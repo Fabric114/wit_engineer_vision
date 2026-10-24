@@ -125,8 +125,7 @@ def _slide_request(arm, station, node) -> AssemblyRequest:
     msg.header.frame_id = "arm_base"
     msg.station_pose_arm_base = _pose_stamped(station)
     msg.initial_joint_state = _joint_state(_inserted_joints(arm, station, node))
-    msg.use_start = True
-    msg.goal.slide = float(load_config()["planning"]["type3"]["exchange_trajectory"]["slide_z_mag"])
+    msg.path_name = AssemblyRequest.PATH_SLIDE
     return msg
 
 
@@ -309,17 +308,7 @@ def test_assembly_success_runs_dense_collision_check(node_factory, arm, station,
         return original(*args, **kwargs)
 
     monkeypatch.setattr(node_module, "validate_trajectory", spy)
-    # 起点: 沿站 x 轴退开 0.15 m 的待插位 (与 config insert_slide_mag 同值) 在装配分支上的解
-    branch = node.type3_planner.ik_branch
-    start_pose = station.copy()
-    start_pose[:3, 3] += 0.15 * station[:3, 0]
-    joints, feasible = arm.solve_ik(start_pose[None], branches=(branch,))
-    assert feasible[0, 0]
-    # 构造 AssemblyRequest 并直接调 _plan_assembly
-    msg = AssemblyRequest()
-    msg.header.frame_id = "arm_base"
-    msg.station_pose_arm_base = _pose_stamped(station)
-    msg.initial_joint_state = _joint_state(joints[0, 0])
+    msg = _slide_request(arm, station, node)
     result = AssemblyResult()
     result.header.stamp = node.get_clock().now().to_msg()
     success, message = node._plan_assembly(msg, result)
@@ -357,18 +346,44 @@ def test_approach_result_cost(node_factory, arm, station, monkeypatch):
     assert not published[1].success and published[1].cost == float("inf")
 
 
-# 滑动段: use_start=true 从"插到底"出发, 走装配场景 (cc_link6 vs 桩体豁免) 并过稠密复检。
-def test_slide_from_inserted_state(node_factory, arm, station):
+# PATH_SLIDE: 从"插到底"出发滑到 slide_z_mag, 走装配场景 (cc_link6 vs 桩体豁免) 并过稠密复检。
+def test_slide_path_from_inserted_state(node_factory, arm, station):
     node = node_factory()
-    msg = _slide_request(arm, station, node)
     result = AssemblyResult()
     result.header.stamp = node.get_clock().now().to_msg()
-    success, message = node._plan_assembly(msg, result)
+    success, message = node._plan_assembly(_slide_request(arm, station, node), result)
     assert success, message
     assert len(result.trajectory.points) > 0
-    # 不给 use_start 时起点是退开 0.15 m 的待插状态, 与"插到底"的实测关节角衔接不上
-    msg.use_start = False
-    success, message = node._plan_assembly(msg, AssemblyResult())
-    assert not success
-    assert "start" in message
+    assert result.selected_ik_branch == node.type3_planner.ik_branch
+    assert np.isfinite(result.cost)
+    assert len(result.q_sweep_s) == 0 and len(result.q_sweep_trajectory.points) == 0
+
+
+# 未知 path_name: INVALID_REQUEST, cost=inf, selected_ik_branch=-1。
+def test_unknown_path_name_is_invalid_request(node_factory, arm, station, monkeypatch):
+    node = node_factory()
+    published = []
+    monkeypatch.setattr(node.assembly_result_pub, "publish", published.append)
+    msg = _slide_request(arm, station, node)
+    msg.path_name = 7
+    node._on_assembly_request(msg)
+    assert not published[0].success
+    assert published[0].error_code == node_module.ERROR_INVALID_REQUEST
+    assert published[0].cost == float("inf") and published[0].selected_ik_branch == -1
+
+
+# 结果回显 path_name, 成功和失败都一样。
+def test_assembly_result_echoes_path_name(node_factory, arm, station, monkeypatch):
+    node = node_factory()
+    published = []
+    monkeypatch.setattr(node.assembly_result_pub, "publish", published.append)
+    good = _slide_request(arm, station, node)
+    bad = _slide_request(arm, station, node)
+    bad.station_pose_arm_base.header.frame_id = ""
+    node._on_assembly_request(good)
+    node._on_assembly_request(bad)
+    assert [(r.path_name, r.success) for r in published] == [
+        (AssemblyRequest.PATH_SLIDE, True),
+        (AssemblyRequest.PATH_SLIDE, False),
+    ]
 

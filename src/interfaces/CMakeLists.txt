@@ -22,7 +22,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # 操作手在环
   "msg/OperatorCommand.msg"
   # 规划通道 (request/result)
-  "msg/AssemblyState.msg"
   "msg/ApproachRequest.msg"
   "msg/ApproachResult.msg"
   "msg/AssemblyRequest.msg"
