@@ -18,11 +18,13 @@ pytest.importorskip("interfaces.msg")
 pytest.importorskip("hppfcl")
 
 from interfaces.msg import ApproachRequest, ApproachResult, AssemblyRequest, AssemblyResult  # noqa: E402
+from geometry_msgs.msg import PoseStamped  # noqa: E402
+from sensor_msgs.msg import JointState  # noqa: E402
 
 from planning import ArmModel, FixedDurationParameterizer, load_config  # noqa: E402
 from planning.type3 import AssemblyPath, AssemblyState  # noqa: E402
 from planning import planning_node as node_module  # noqa: E402
-from planning.planning_node import PlanningNode  # noqa: E402
+from planning.planning_node import JOINT_NAMES, PlanningNode  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -81,18 +83,55 @@ def _set_pose(pose, transform: np.ndarray) -> None:
     pose.orientation.y, pose.orientation.z = float(y), float(z)
 
 
-# helper: 构造 ApproachRequest; fill_station=False 时 station_pose 留默认值。
-def _approach_request(arm, station, start, *, fill_station=True) -> ApproachRequest:
+# helper: 关节角 -> JointState (默认名字 J1..J6, 顺序与 q 对应)。
+def _joint_state(q, names=JOINT_NAMES) -> JointState:
+    msg = JointState()
+    msg.name = list(names)
+    msg.position = [float(v) for v in q]
+    return msg
+
+
+# helper: 4x4 齐次变换 -> PoseStamped (默认 frame_id = arm_base)。
+def _pose_stamped(transform: np.ndarray, frame: str = "arm_base") -> PoseStamped:
+    msg = PoseStamped()
+    msg.header.frame_id = frame
+    _set_pose(msg.pose, transform)
+    return msg
+
+
+# helper: 构造 ApproachRequest; frame 是 station_pose_arm_base 的 frame_id。
+def _approach_request(arm, station, start, *, frame="arm_base") -> ApproachRequest:
     """接近点 = 站体沿 +x 退 0.15 m (与装配首状态一致)。"""
     target = station.copy()
     target[:3, 3] += 0.15 * station[:3, 0]
     msg = ApproachRequest()
     msg.header.frame_id = "arm_base"
-    msg.start_joint = [float(v) for v in start]
+    msg.initial_joint_state = _joint_state(start)
     _set_pose(msg.target_pose, target)
-    if fill_station:
-        _set_pose(msg.station_pose, station)
+    msg.station_pose_arm_base = _pose_stamped(station, frame)
     msg.timeout = 2.0
+    return msg
+
+
+# helper: 插到底 (AssemblyState(), roll=0) 在装配分支上的关节角。
+def _inserted_joints(arm, station, node) -> np.ndarray:
+    branch = node.type3_planner.ik_branch
+    inserted = node.type3_planner.task_poses(
+        AssemblyPath(AssemblyState().as_array()[None]), station, np.zeros(1)
+    )
+    joints, feasible = arm.solve_ik(inserted, branches=(branch,))
+    assert feasible[0, 0]
+    return joints[0, 0]
+
+
+# helper: 滑动段请求 (插到底 -> slide_z_mag), 起点为插到底关节角。
+def _slide_request(arm, station, node) -> AssemblyRequest:
+    msg = AssemblyRequest()
+    msg.header.frame_id = "arm_base"
+    msg.station_pose_arm_base = _pose_stamped(station)
+    msg.initial_joint_state = _joint_state(_inserted_joints(arm, station, node))
+    msg.use_start = True
+    msg.goal.slide = float(load_config()["planning"]["type3"]["exchange_trajectory"]["slide_z_mag"])
     return msg
 
 
@@ -135,12 +174,43 @@ def test_missing_ompl_refuses_to_start(node_factory, monkeypatch):
         node_factory()
 
 
-# ApproachRequest 未填 station_pose 必须失败, 错误提及 station_pose。
-def test_approach_requires_station_pose(node_factory, arm, station):
-    node = node_factory()
-    ok, message = _approach(node, _approach_request(arm, station, SAFE_START, fill_station=False))
+# initial_joint_state 按名字取 J1..J6, 不按下标: 打乱顺序也要规划成功。
+def test_joint_state_reordered_by_name(node_factory, arm, station):
+    msg = _approach_request(arm, station, SAFE_START)
+    order = [2, 0, 1, 5, 4, 3]
+    msg.initial_joint_state = _joint_state(SAFE_START[order], names=[JOINT_NAMES[i] for i in order])
+    ok, message = _approach(node_factory(), msg)
+    assert ok, message
+
+
+# 缺关节必须失败, 错误里点名缺的关节。
+def test_joint_state_missing_joint_rejected(node_factory, arm, station):
+    msg = _approach_request(arm, station, SAFE_START)
+    msg.initial_joint_state = _joint_state(SAFE_START[:5], names=JOINT_NAMES[:5])
+    ok, message = _approach(node_factory(), msg)
     assert not ok
-    assert "station_pose" in message
+    assert "J6" in message
+
+
+# 多出来的关节 (如升降轴 line) 忽略。
+def test_joint_state_extra_joint_ignored(node_factory, arm, station):
+    msg = _approach_request(arm, station, SAFE_START)
+    msg.initial_joint_state = _joint_state(np.append(SAFE_START, 0.1), names=[*JOINT_NAMES, "line"])
+    ok, message = _approach(node_factory(), msg)
+    assert ok, message
+
+
+# 站姿 frame_id 不是 arm_base (含空串) 时两段都必须失败, 不能告警后照常规划。
+@pytest.mark.parametrize("frame", ["", "camera"])
+def test_station_frame_must_be_arm_base(node_factory, arm, station, frame):
+    node = node_factory()
+    ok, message = _approach(node, _approach_request(arm, station, SAFE_START, frame=frame))
+    assert not ok
+    assert "frame_id" in message
+    assembly = _slide_request(arm, station, node)
+    assembly.station_pose_arm_base.header.frame_id = frame
+    with pytest.raises(ValueError, match="frame_id"):
+        node._plan_assembly(assembly, AssemblyResult())
 
 
 # 起点与站体碰撞时接近段规划必须拒绝, 错误提示含"起点"。
@@ -209,12 +279,12 @@ def test_results_echo_request_id(node_factory, arm, station, monkeypatch):
     ok_request = _approach_request(arm, station, SAFE_START)
     ok_request.request_id = "approach-ok"
     node._on_approach_request(ok_request)
-    bad_request = _approach_request(arm, station, SAFE_START, fill_station=False)
+    bad_request = _approach_request(arm, station, SAFE_START, frame="")
     bad_request.request_id = "approach-bad"
     node._on_approach_request(bad_request)
-    assembly_request = AssemblyRequest()
-    assembly_request.header.frame_id = "arm_base"
-    assembly_request.request_id = "assembly-bad"  # station_pose 没填, 必失败
+    assembly_request = _slide_request(arm, station, node)
+    assembly_request.station_pose_arm_base.header.frame_id = ""  # 站姿 frame 不对, 必失败
+    assembly_request.request_id = "assembly-bad"
     node._on_assembly_request(assembly_request)
 
     assert [(r.request_id, r.success) for r in published] == [
@@ -252,8 +322,8 @@ def test_assembly_success_runs_dense_collision_check(node_factory, arm, station,
     # 构造 AssemblyRequest 并直接调 _plan_assembly
     msg = AssemblyRequest()
     msg.header.frame_id = "arm_base"
-    _set_pose(msg.station_pose, station)
-    msg.start_joint = [float(v) for v in joints[0, 0]]
+    msg.station_pose_arm_base = _pose_stamped(station)
+    msg.initial_joint_state = _joint_state(joints[0, 0])
     result = AssemblyResult()
     result.header.stamp = node.get_clock().now().to_msg()
     success, message = node._plan_assembly(msg, result)
@@ -280,18 +350,7 @@ def test_approach_uses_assembly_branch(node_factory, arm, station):
 # 滑动段: use_start=true 从"插到底"出发, 走装配场景 (cc_link6 vs 桩体豁免) 并过稠密复检。
 def test_slide_from_inserted_state(node_factory, arm, station):
     node = node_factory()
-    branch = node.type3_planner.ik_branch
-    inserted = node.type3_planner.task_poses(
-        AssemblyPath(AssemblyState().as_array()[None]), station, np.zeros(1)
-    )
-    joints, feasible = arm.solve_ik(inserted, branches=(branch,))
-    assert feasible[0, 0]
-    msg = AssemblyRequest()
-    msg.header.frame_id = "arm_base"
-    _set_pose(msg.station_pose, station)
-    msg.start_joint = [float(v) for v in joints[0, 0]]
-    msg.use_start = True
-    msg.goal.slide = float(load_config()["planning"]["type3"]["exchange_trajectory"]["slide_z_mag"])
+    msg = _slide_request(arm, station, node)
     result = AssemblyResult()
     result.header.stamp = node.get_clock().now().to_msg()
     success, message = node._plan_assembly(msg, result)

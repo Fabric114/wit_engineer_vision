@@ -9,7 +9,7 @@
     接近段 type2: 对请求里的 target_pose 求 IK, 在候选解里挑"离起始关节角最省力"的一组,
         再用 OMPL BIT* 在关节空间搜一条不越限、不碰撞的稀疏路径 (planning/type2.py);
         没装 OMPL 时节点起不来, 不退化成直线。
-        碰撞场景按请求里的 station_pose 摆 (站体 + 局部桩体), 起点碰撞直接拒绝。
+        碰撞场景按请求里的 station_pose_arm_base 摆 (站体 + 局部桩体), 起点碰撞直接拒绝。
     装配段 type3: 把 AssemblyState 目标铺成流形上的一串状态, 按 roll 离散建分层图,
         Viterbi 选一串连续关节路点, 必要时走 best_ik 尽力修复 (planning/type3.py)。
 
@@ -34,13 +34,13 @@ from __future__ import annotations
 
 # 标准库 / 第三方 / ROS 消息依赖
 import time
-from collections.abc import Sequence
 
 import numpy as np
 import rclpy
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PoseStamped
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory as JointTrajectoryMsg
 from trajectory_msgs.msg import JointTrajectoryPoint
 
@@ -132,14 +132,30 @@ def _transform_from_pose(pose: Pose) -> np.ndarray:
 
 
 # 把消息里的关节角数组转成 (6,) 向量并校验维度与有限性 (单位 rad)
-def _joint_array(values: Sequence[float]) -> np.ndarray:
-    """float32[6] -> (6,) float64 关节角向量。"""
-    joints = np.asarray(values, dtype=float).reshape(-1)
-    if joints.shape != (len(JOINT_NAMES),):
-        raise ValueError(f"关节角必须是 {len(JOINT_NAMES)} 维, 收到 {joints.shape}")
+def _joint_positions_from_joint_state(msg: JointState) -> np.ndarray:
+    """JointState -> (6,) float64 关节角, 按名字取 J1..J6 (同 RM2026 ros_utils); 多余关节忽略。"""
+    by_name = {name: index for index, name in enumerate(msg.name)}
+    missing = [name for name in JOINT_NAMES if name not in by_name]
+    if missing:
+        raise ValueError(f"initial_joint_state 缺关节 {missing} (收到 name={list(msg.name)})")
+    if len(msg.position) != len(msg.name):
+        raise ValueError(
+            f"initial_joint_state 的 position 长度 {len(msg.position)} 与 name 长度 {len(msg.name)} 不一致"
+        )
+    joints = np.asarray([msg.position[by_name[name]] for name in JOINT_NAMES], dtype=float)
     if not np.all(np.isfinite(joints)):
-        raise ValueError("关节角含非有限值")
+        raise ValueError(f"initial_joint_state 含非有限值: {joints.tolist()}")
     return joints
+
+
+# PoseStamped -> 4x4; frame_id 必须是 arm_base (含空串都拒绝), 不再告警后照常解释
+def _transform_from_pose_stamped(msg: PoseStamped, label: str) -> np.ndarray:
+    """站姿 PoseStamped -> 4x4 齐次变换 (arm_base 系)。"""
+    if msg.header.frame_id != FRAME_ARM_BASE:
+        raise ValueError(
+            f"{label}.header.frame_id 必须是 {FRAME_ARM_BASE!r}, 收到 {msg.header.frame_id!r}"
+        )
+    return _transform_from_pose(msg.pose)
 
 
 # 浮点秒拆成 sec + nanosec; 四舍五入可能让 nanosec 进位到 1e9, 需手动进位
@@ -461,7 +477,12 @@ class PlanningNode(Node):
         """规划接近段并填好 result.trajectory, 返回给 result.message 的说明。"""
         # 输入校验与预处理: 起始关节角折进采样盒, 目标位姿转 4x4; 请求 timeout<=0 时用参数默认超时
         self._check_frame(msg.header.frame_id, "ApproachRequest.header")
-        start_joint = self._to_type2_bounds(_joint_array(msg.start_joint))[0]
+        start_joint = self._to_type2_bounds(
+            _joint_positions_from_joint_state(msg.initial_joint_state)
+        )[0]
+        station = _transform_from_pose_stamped(
+            msg.station_pose_arm_base, "ApproachRequest.station_pose_arm_base"
+        )
         target = _transform_from_pose(msg.target_pose)
         timeout_s = float(msg.timeout) if float(msg.timeout) > 0.0 else self.approach_bit_timeout_s
         self.get_logger().info(
@@ -471,11 +492,7 @@ class PlanningNode(Node):
             f"timeout_s={timeout_s:.3f}"
         )
 
-        # station_pose 必填, 按站位姿建检查器 (含局部桩体), 并先验起点不碰撞
-        if msg.station_pose == Pose():
-            # 默认 Pose 是 arm_base 原点 + 单位姿态, 物理上不可能是站位, 视为没填
-            raise ValueError("ApproachRequest.station_pose 必填 (收到默认 Pose)")
-        station = _transform_from_pose(msg.station_pose)
+        # 按站位姿建检查器 (含局部桩体), 并先验起点不碰撞
         collision_checker = self._make_collision_checker(station, stage="approach")
         if bool(collision_checker.check_configs(start_joint[None, :])[0]):
             raise RuntimeError("接近段起点 start_joint 已与兑换站碰撞")
@@ -585,11 +602,10 @@ class PlanningNode(Node):
         """在装配流形上规划, 填好 result.trajectory, 返回 (是否成功, 说明)。"""
         self._check_frame(msg.header.frame_id, "AssemblyRequest.header")
         # 输入解析: 起始关节角 (6,)、站位姿 4x4 (arm_base 系)、目标流形状态
-        start_joint = _joint_array(msg.start_joint)
-        if msg.station_pose == Pose():
-            # 与接近段一致: 默认 Pose 是 arm_base 原点 + 单位姿态, 物理上不可能是站位, 视为没填
-            raise ValueError("AssemblyRequest.station_pose 必填 (收到默认 Pose)")
-        station = _transform_from_pose(msg.station_pose)
+        start_joint = _joint_positions_from_joint_state(msg.initial_joint_state)
+        station = _transform_from_pose_stamped(
+            msg.station_pose_arm_base, "AssemblyRequest.station_pose_arm_base"
+        )
         goal_state = self._assembly_state(msg.goal)
         # 起点: use_start=false 取"沿站轴退开 start_axial_m 的待插状态", 与接近段的落点衔接;
         # use_start=true 取请求给的 start (如"已插到底"再接滑动段)。
