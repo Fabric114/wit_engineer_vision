@@ -99,17 +99,12 @@ def _pose_stamped(transform: np.ndarray, frame: str = "arm_base") -> PoseStamped
     return msg
 
 
-# helper: 构造 ApproachRequest; frame 是 station_pose_arm_base 的 frame_id。
+# helper: 构造 ApproachRequest; frame 是 station_pose_arm_base 的 frame_id。 目标由节点自选。
 def _approach_request(arm, station, start, *, frame="arm_base") -> ApproachRequest:
-    """接近点 = 站体沿 +x 退 0.15 m (与装配首状态一致)。"""
-    target = station.copy()
-    target[:3, 3] += 0.15 * station[:3, 0]
     msg = ApproachRequest()
     msg.header.frame_id = "arm_base"
     msg.initial_joint_state = _joint_state(start)
-    _set_pose(msg.target_pose, target)
     msg.station_pose_arm_base = _pose_stamped(station, frame)
-    msg.timeout = 2.0
     return msg
 
 
@@ -140,7 +135,8 @@ def _approach(node, msg):
     result = ApproachResult()
     result.header.stamp = node.get_clock().now().to_msg()
     try:
-        return True, node._plan_approach(msg, result)
+        message, _cost = node._plan_approach(msg, result)
+        return True, message
     except Exception as exc:  # 与 _on_approach_request 一致: 任何异常都是失败
         return False, f"{type(exc).__name__}: {exc}"
 
@@ -335,16 +331,30 @@ def test_assembly_success_runs_dense_collision_check(node_factory, arm, station,
     assert result.repaired_nodes == 0
 
 
-# 接近段默认只用装配段的 IK 分支 (两段衔接); 接近终点必须落在该分支上。
-def test_approach_uses_assembly_branch(node_factory, arm, station):
+# 接近目标由节点按站姿自选: 终点 TCP 落在沿站 +x 退开 insert_slide_mag 的待插位, 分支默认同装配段。
+def test_approach_goal_is_insert_standoff_on_assembly_branch(node_factory, arm, station):
     node = node_factory()
     assert node.approach_ik_branches == (node.type3_planner.ik_branch,)
-    ok, message = _approach(node, _approach_request(arm, station, SAFE_START))
-    assert ok, message
-    target = station.copy()
-    target[:3, 3] += 0.15 * station[:3, 0]
-    joints, valid = arm.solve_ik(target[None], branches=(node.type3_planner.ik_branch,))
-    assert valid[0, 0]
+    result = ApproachResult()
+    message, cost = node._plan_approach(_approach_request(arm, station, SAFE_START), result)
+    goal = np.asarray(result.trajectory.points[-1].positions)
+    tcp = arm.forward_kinematics(goal[None]).tcp_transforms[0]
+    standoff = station[:3, 3] + node.approach_axial_m * station[:3, 0]
+    assert np.linalg.norm(tcp[:3, 3] - standoff) < 1e-3
+    # 插入轴 (TCP x) 与站轴平行
+    assert abs(float(np.dot(tcp[:3, 0], station[:3, 0]))) > 1.0 - 1e-6
+    assert np.isfinite(cost) and cost >= 0.0
+
+
+# 失败结果的 cost 为 inf; 成功结果 cost 有限。
+def test_approach_result_cost(node_factory, arm, station, monkeypatch):
+    node = node_factory()
+    published = []
+    monkeypatch.setattr(node.approach_result_pub, "publish", published.append)
+    node._on_approach_request(_approach_request(arm, station, SAFE_START))
+    node._on_approach_request(_approach_request(arm, station, SAFE_START, frame="camera"))
+    assert published[0].success and np.isfinite(published[0].cost)
+    assert not published[1].success and published[1].cost == float("inf")
 
 
 # 滑动段: use_start=true 从"插到底"出发, 走装配场景 (cc_link6 vs 桩体豁免) 并过稠密复检。

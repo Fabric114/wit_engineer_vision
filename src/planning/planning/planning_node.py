@@ -73,6 +73,8 @@ JOINT_NAMES = ("J1", "J2", "J3", "J4", "J5", "J6")
 FRAME_ARM_BASE = "arm_base"
 #: 起始关节角落在限位外多少弧度内算"测量噪声", 直接夹回去而不报错
 BOUND_TOLERANCE_RAD = 1e-3
+#: 接近段选目标时绕插入轴扫的 roll 个数 (每 1°, 同 RM2026)
+APPROACH_ROLL_COUNT = 360
 
 # 结果里的机器可读失败分类。空串表示成功; 其余值与 message 文案解耦, 执行侧只认这些值。
 ERROR_INVALID_REQUEST = "INVALID_REQUEST"
@@ -265,6 +267,8 @@ class PlanningNode(Node):
         self.approach_bit_timeout_s = self._declare_float(
             "approach.bit_timeout_s", approach_cfg["bit_timeout_s"]
         )
+        # 接近段目标: 沿站轴退开 insert_slide_mag 的待插状态 (= 装配手动插入的起点)
+        self.approach_axial_m = float(geometry_cfg["insert_slide_mag"])
         # 装配段: 轨迹总时长 (s)、稠密采样步长 (s)
         self.assembly_duration_s = self._declare_float(
             "assembly.duration_s", trajectory_cfg["duration_s"]
@@ -450,11 +454,12 @@ class PlanningNode(Node):
         result.error_code = ""
         started = time.perf_counter()
         try:
-            result.message = self._plan_approach(msg, result)
+            result.message, result.cost = self._plan_approach(msg, result)
             result.success = True
         except Exception as exc:  # 任何一步失败都回一条失败结果, 不让节点挂掉
             result.success = False
             result.message = f"{type(exc).__name__}: {exc}"
+            result.cost = float("inf")
             result.error_code = _classify_exception(exc)
             result.trajectory = JointTrajectoryMsg()
             self.get_logger().warning(
@@ -472,10 +477,10 @@ class PlanningNode(Node):
             )
         self.approach_result_pub.publish(result)
 
-    # 流程: 输入校验 -> 碰撞场景 -> IK 选终点 -> BIT* 路径 -> 参数化 -> 校验 -> 填消息
-    def _plan_approach(self, msg: ApproachRequest, result: ApproachResult) -> str:
-        """规划接近段并填好 result.trajectory, 返回给 result.message 的说明。"""
-        # 输入校验与预处理: 起始关节角折进采样盒, 目标位姿转 4x4; 请求 timeout<=0 时用参数默认超时
+    # 流程: 输入校验 -> 碰撞场景 -> 扫 roll 选终点 -> BIT* 路径 -> 参数化 -> 校验 -> 填消息
+    def _plan_approach(self, msg: ApproachRequest, result: ApproachResult) -> tuple[str, float]:
+        """规划接近段并填好 result.trajectory, 返回 (result.message 的说明, 终点运动代价)。"""
+        # 输入校验与预处理: 起始关节角折进采样盒, 站位姿转 4x4
         self._check_frame(msg.header.frame_id, "ApproachRequest.header")
         start_joint = self._to_type2_bounds(
             _joint_positions_from_joint_state(msg.initial_joint_state)
@@ -483,24 +488,26 @@ class PlanningNode(Node):
         station = _transform_from_pose_stamped(
             msg.station_pose_arm_base, "ApproachRequest.station_pose_arm_base"
         )
-        target = _transform_from_pose(msg.target_pose)
-        timeout_s = float(msg.timeout) if float(msg.timeout) > 0.0 else self.approach_bit_timeout_s
         self.get_logger().info(
             "接近段请求 "
             f"start_joint={np.round(start_joint, 4).tolist()} "
-            f"target_{_pose_summary(target)} "
-            f"timeout_s={timeout_s:.3f}"
+            f"station_{_pose_summary(station)} "
+            f"axial_m={self.approach_axial_m:.4f} "
+            f"timeout_s={self.approach_bit_timeout_s:.3f}"
         )
 
         # 按站位姿建检查器 (含局部桩体), 并先验起点不碰撞
         collision_checker = self._make_collision_checker(station, stage="approach")
         if bool(collision_checker.check_configs(start_joint[None, :])[0]):
             raise RuntimeError("接近段起点 start_joint 已与兑换站碰撞")
-        # 在 IK 候选里选终点关节角 (有效 + 无碰撞 + 运动代价最小)
-        goal_joint, goal_cost = self._select_approach_goal(target, start_joint, collision_checker)
+        # 在待插位 × 360 roll 的 IK 候选里选终点关节角 (有效 + 无碰撞 + 运动代价最小)
+        goal_joint, goal_cost, goal_roll = self._select_approach_goal(
+            station, start_joint, collision_checker
+        )
         self.get_logger().info(
             "接近段目标关节角 "
-            f"goal_joint={np.round(goal_joint, 4).tolist()} motion_cost={goal_cost:.6f}"
+            f"goal_joint={np.round(goal_joint, 4).tolist()} motion_cost={goal_cost:.6f} "
+            f"goal_roll_deg={np.rad2deg(goal_roll):.1f}"
         )
 
         # BIT* 的状态合法性回调: 单个构型查碰撞
@@ -518,7 +525,7 @@ class PlanningNode(Node):
             validity_fn=validity_fn,
             joint_lower=self.joint_lower,
             joint_upper=self.joint_upper,
-            timeout_s=timeout_s,
+            timeout_s=self.approach_bit_timeout_s,
         )
 
         # 稀疏路径 -> 定时长稠密轨迹, 校验通过后转成消息填入 result
@@ -535,33 +542,44 @@ class PlanningNode(Node):
             f"sample_dt={self.approach_sample_dt:.4f}"
         )
         # message = 规划说明 + 峰值摘要
-        return f"ok {peaks}"
+        return f"ok {peaks}", goal_cost
 
     def _select_approach_goal(
         self,
-        target: np.ndarray,
+        station: np.ndarray,
         start_joint: np.ndarray,
         collision_checker,
-    ) -> tuple[np.ndarray, float]:
-        """对 target_pose 求 IK, 在有效且无碰撞的候选里挑运动代价最小的一组关节角。"""
-        # 批量 IK: 输入 (1, 4, 4), 输出 joints (1, n_branches, 6) / valid (1, n_branches); 取有效解
-        joints, valid = self.arm.solve_ik(target[None, :, :], branches=self.approach_ik_branches)
-        candidates = joints[0][valid[0]]
-        if not len(candidates):
+    ) -> tuple[np.ndarray, float, float]:
+        """待插位绕插入轴扫 360 个 roll 求 IK, 在有效且无碰撞的候选里挑运动代价最小的一组。
+
+        返回 (终点关节角 (6,), 运动代价, roll [rad])。 同 RM2026 _select_approach_goal;
+        不检查同一 roll 下"插到底"是否可解 (见 todo.md §3)。
+        """
+        rolls = np.arange(APPROACH_ROLL_COUNT, dtype=float) * (2.0 * np.pi / APPROACH_ROLL_COUNT)
+        approach_state = AssemblyState(axial_offset_m=self.approach_axial_m)
+        targets = self.type3_planner.task_poses(
+            AssemblyPath(approach_state.as_array()[None, :]), station, rolls
+        )
+        # 批量 IK: joints (R, n_branches, 6) / valid (R, n_branches); 展平后下标 // n_branches = roll 下标
+        joints, valid = self.arm.solve_ik(targets, branches=self.approach_ik_branches)
+        flat_index = np.flatnonzero(valid.reshape(-1))
+        if not len(flat_index):
             raise RuntimeError(
-                f"target_pose 在 IK 分支 {list(self.approach_ik_branches)} 上无解 "
-                f"(ik_type={self.arm.ik_type}; 默认与装配段同分支), 该位姿可能超出工作空间或姿态不可达"
+                f"接近段在 IK 分支 {list(self.approach_ik_branches)} 上 {APPROACH_ROLL_COUNT} 个 roll 均无解 "
+                f"(ik_type={self.arm.ik_type}; 待插位 axial={self.approach_axial_m:.3f} m), 站姿可能超出工作空间"
             )
         # 候选折进采样盒 (超限会抛错), 再剔除碰撞解
-        candidates = self._to_type2_bounds(candidates)
+        candidates = self._to_type2_bounds(joints.reshape(-1, 6)[flat_index])
         free = ~collision_checker.check_configs(candidates)
         if not np.any(free):
-            raise RuntimeError("target_pose 的所有 IK 解都与兑换站碰撞")
+            raise RuntimeError("接近段所有 IK 候选都与兑换站碰撞")
         candidates = candidates[free]
+        flat_index = flat_index[free]
         # 按相对起始关节角的运动代价挑最省力的一组
         costs = self._motion_cost(candidates, start_joint)
         best = int(np.argmin(costs))
-        return candidates[best], float(costs[best])
+        roll = float(rolls[int(flat_index[best]) // valid.shape[1]])
+        return candidates[best], float(costs[best]), roll
 
     # ------------------------------------------------------------------ 装配段
     # 装配段回调: 规划失败分两类 (plan.success=False 返回 / 抛异常), 都发布结果
