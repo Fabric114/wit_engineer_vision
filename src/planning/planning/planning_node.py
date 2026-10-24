@@ -504,7 +504,7 @@ class PlanningNode(Node):
         collision_checker = self._make_collision_checker(station, stage="approach")
         if bool(collision_checker.check_configs(start_joint[None, :])[0]):
             raise RuntimeError("接近段起点 start_joint 已与兑换站碰撞")
-        # 在待插位 × 360 roll 的 IK 候选里选终点关节角 (有效 + 无碰撞 + 运动代价最小)
+        # 在待插位 × type3 roll 网格的 IK 候选里选终点关节角 (有效 + 无碰撞 + 运动代价最小)
         goal_joint, goal_cost, goal_roll = self._select_approach_goal(
             station, start_joint, collision_checker
         )
