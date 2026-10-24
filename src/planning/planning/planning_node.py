@@ -72,8 +72,6 @@ JOINT_NAMES = ("J1", "J2", "J3", "J4", "J5", "J6")
 FRAME_ARM_BASE = "arm_base"
 #: 起始关节角落在限位外多少弧度内算"测量噪声", 直接夹回去而不报错
 BOUND_TOLERANCE_RAD = 1e-3
-#: 接近段选目标时绕插入轴扫的 roll 个数 (每 1°, 同 RM2026)
-APPROACH_ROLL_COUNT = 360
 
 # 结果里的机器可读失败分类。空串表示成功; 其余值与 message 文案解耦, 执行侧只认这些值。
 ERROR_INVALID_REQUEST = "INVALID_REQUEST"
@@ -556,12 +554,14 @@ class PlanningNode(Node):
         start_joint: np.ndarray,
         collision_checker,
     ) -> tuple[np.ndarray, float, float]:
-        """待插位绕插入轴扫 360 个 roll 求 IK, 在有效且无碰撞的候选里挑运动代价最小的一组。
+        """待插位绕插入轴扫 roll 求 IK, 在有效且无碰撞的候选里挑运动代价最小的一组。
 
-        返回 (终点关节角 (6,), 运动代价, roll [rad])。 同 RM2026 _select_approach_goal;
+        返回 (终点关节角 (6,), 运动代价, roll [rad])。 流程同 RM2026 _select_approach_goal, 但 roll 用
+        type3 的网格 (assembly.roll_step_deg, 默认 5°) 而不是 1°: 操作手在这个 roll 上直插到底后, 装配段
+        首层必须有同 roll 的节点, 否则起点差超 start_joint_tolerance_rad 被拒。
         不检查同一 roll 下"插到底"是否可解 (见 todo.md §3)。
         """
-        rolls = np.arange(APPROACH_ROLL_COUNT, dtype=float) * (2.0 * np.pi / APPROACH_ROLL_COUNT)
+        rolls = np.asarray(self.type3_planner.rolls, dtype=float)
         approach_state = AssemblyState(axial_offset_m=self.approach_axial_m)
         targets = self.type3_planner.task_poses(
             AssemblyPath(approach_state.as_array()[None, :]), station, rolls
@@ -571,7 +571,7 @@ class PlanningNode(Node):
         flat_index = np.flatnonzero(valid.reshape(-1))
         if not len(flat_index):
             raise RuntimeError(
-                f"接近段在 IK 分支 {list(self.approach_ik_branches)} 上 {APPROACH_ROLL_COUNT} 个 roll 均无解 "
+                f"接近段在 IK 分支 {list(self.approach_ik_branches)} 上 {len(rolls)} 个 roll 均无解 "
                 f"(ik_type={self.arm.ik_type}; 待插位 axial={self.approach_axial_m:.3f} m), 站姿可能超出工作空间"
             )
         # 候选折进采样盒 (超限会抛错), 再剔除碰撞解

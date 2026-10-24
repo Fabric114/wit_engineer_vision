@@ -335,6 +335,18 @@ def test_approach_goal_is_insert_standoff_on_assembly_branch(node_factory, arm, 
     assert np.isfinite(cost) and cost >= 0.0
 
 
+# 接近段选的 roll 必须落在 type3 的 roll 网格上: 操作手在这个 roll 上直插到底后, 滑动段首层要有
+# 同 roll 的节点, 否则起点差超 start_joint_tolerance_rad 被拒 (1° 扫 vs 5° 网格曾经对不上)。
+@pytest.mark.parametrize("start", [np.full(6, 0.1), SAFE_START])
+def test_approach_roll_is_on_assembly_grid(node_factory, station, start):
+    node = node_factory()
+    checker = node._make_collision_checker(station, stage="approach")
+    _, _, roll = node._select_approach_goal(station, node._to_type2_bounds(start)[0], checker)
+    grid = np.mod(node.type3_planner.rolls, 2.0 * np.pi)
+    gap = np.abs((np.mod(roll, 2.0 * np.pi) - grid + np.pi) % (2.0 * np.pi) - np.pi)
+    assert float(np.min(gap)) < 1e-9, f"roll {np.rad2deg(roll):.1f}° 不在 type3 网格上"
+
+
 # 失败结果的 cost 为 inf; 成功结果 cost 有限。
 def test_approach_result_cost(node_factory, arm, station, monkeypatch):
     node = node_factory()
