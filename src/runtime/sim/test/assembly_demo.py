@@ -32,6 +32,7 @@ import argparse
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,7 @@ class AssemblyDemo(Node):
         self._station: ExchangeStationPose | None = None
         self._column: JointState | None = None
         self._results: dict[str, object] = {}
+        self._pending: dict[str, str] = {}  # kind -> 最新发出的 request_id
         self._events = {name: threading.Event() for name in ("state", "station", "approach", "assembly", "column")}
         self.create_subscription(ArmMcuState, "/mcu/arm/state", self._on_state, 10)
         self.create_subscription(JointState, "/sim/exchange_column/joint_states", self._on_column, 10)
@@ -92,8 +94,20 @@ class AssemblyDemo(Node):
             self._events["station"].set()
 
     def _on_result(self, kind: str, msg) -> None:
+        # 只认最新发出的那个请求; 超时后迟到的旧结果直接丢 (同 RM2026 task_node)
+        if msg.request_id != self._pending.get(kind):
+            self.get_logger().warning(f"丢弃过期 {kind} 结果 id={msg.request_id}")
+            return
         self._results[kind] = msg
         self._events[kind].set()
+
+    def request(self, kind: str, req) -> None:
+        """给请求配新 request_id 并发出; 之前未到的同类结果从此作废。"""
+        req.request_id = uuid.uuid4().hex
+        self._pending[kind] = req.request_id
+        self._events[kind].clear()
+        self._results.pop(kind, None)
+        (self.approach_pub if kind == "approach" else self.assembly_pub).publish(req)
 
     def wait(self, name: str, timeout: float) -> bool:
         return self._events[name].wait(timeout)
@@ -266,7 +280,7 @@ def main() -> int:
         mat_to_pose(target, req.target_pose)
         mat_to_pose(station, req.station_pose)
         req.timeout = float(args.bit_timeout)
-        node.approach_pub.publish(req)
+        node.request("approach", req)
         log.info("[接近] 已发请求, 等结果 ...")
         if not node.wait("approach", args.plan_timeout):
             log.error("[接近] 等结果超时 —— planning_node 起了吗?")
@@ -303,7 +317,7 @@ def main() -> int:
         req.use_start = True
         _assembly_state(req.start, AssemblyState())
         _assembly_state(req.goal, AssemblyState(slide_m=slide))
-        node.assembly_pub.publish(req)
+        node.request("assembly", req)
         log.info(f"[滑动] 已发请求 (插到底 -> slide {slide:.3f} m), 等结果 ...")
         if not node.wait("assembly", args.plan_timeout):
             log.error("[滑动] 等结果超时")

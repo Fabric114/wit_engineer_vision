@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import threading
 import time
+import uuid
 
 import numpy as np
 import rclpy
@@ -81,6 +82,7 @@ class DemoNode(Node):
         self._state: ArmMcuState | None = None
         self._station: ExchangeStationPose | None = None
         self._result: ApproachResult | None = None
+        self.pending_request_id = ""  # 最新发出的 request_id, 结果对不上就丢
         self.got_state = threading.Event()
         self.got_station = threading.Event()
         self.got_result = threading.Event()
@@ -103,6 +105,9 @@ class DemoNode(Node):
             self.got_station.set()
 
     def _on_result(self, msg: ApproachResult) -> None:
+        if msg.request_id != self.pending_request_id:
+            self.get_logger().warning(f"丢弃过期结果 id={msg.request_id}")
+            return
         self._result = msg
         self.got_result.set()
 
@@ -225,6 +230,8 @@ def main() -> int:
         mat_to_pose(T_target, req.target_pose)
         mat_to_pose(T_station, req.station_pose)  # 碰撞场景按真实站位摆放
         req.timeout = float(args.plan_timeout)
+        req.request_id = uuid.uuid4().hex
+        node.pending_request_id = req.request_id
         node.req_pub.publish(req)
         log.info("已发 ApproachRequest, 等 /plan/approach/result ...")
 

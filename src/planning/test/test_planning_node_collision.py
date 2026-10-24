@@ -1,4 +1,4 @@
-# test_planning_node_collision.py — planning_node 碰撞行为 (启动校验 / 起点碰撞 / 发布前复检)。
+# test_planning_node_collision.py — planning_node 碰撞行为 (启动校验 / 起点碰撞 / 发布前复检) 与 request_id 回显。
 """planning_node 碰撞行为 (第二轮, docs/audits/2026-10-09/collision-fix-spec.md 第 3 节 4~8)。
 
 需要 rclpy 与已构建的 interfaces (先 source install/setup.bash); 缺了就整体 skip。
@@ -18,12 +18,11 @@ pytest.importorskip("interfaces.msg")
 pytest.importorskip("hppfcl")
 
 from interfaces.msg import ApproachRequest, ApproachResult, AssemblyRequest, AssemblyResult  # noqa: E402
-from rclpy.parameter import Parameter  # noqa: E402
 
 from planning import ArmModel, FixedDurationParameterizer, load_config  # noqa: E402
 from planning.type3 import AssemblyPath, AssemblyState  # noqa: E402
 from planning import planning_node as node_module  # noqa: E402
-from planning.planning_node import UNCHECKED_TAG, PlanningNode  # noqa: E402
+from planning.planning_node import PlanningNode  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -36,24 +35,13 @@ def ros_context():
     rclpy.shutdown()
 
 
-# fixture: PlanningNode 工厂。patch Node.__init__ 注入 collision.enabled 参数;
-# collision_cfg 不为哨兵 ... 时替换 config 的 collision 段 (None 表示该段缺失); 测试结束统一销毁节点。
+# fixture: PlanningNode 工厂。collision_cfg 不为哨兵 ... 时替换 config 的 collision 段
+# (None 表示该段缺失); 测试结束统一销毁节点。
 @pytest.fixture
 def node_factory(monkeypatch):
     created = []
 
-    original_init = node_module.Node.__init__
-
-    def factory(collision_enabled: bool = True, collision_cfg=...):
-        def init(self, name, **kwargs):
-            original_init(
-                self,
-                name,
-                parameter_overrides=[Parameter("collision.enabled", value=collision_enabled)],
-                **kwargs,
-            )
-
-        monkeypatch.setattr(node_module.Node, "__init__", init)
+    def factory(collision_cfg=...):
         if collision_cfg is not ...:
             config = load_config()
             config = dict(config, collision=collision_cfg)
@@ -122,16 +110,32 @@ def _approach(node, msg):
 SAFE_START = np.array([0.3, 0.8, 1.0, 0.2, 0.3, 0.1])
 
 
-# 碰撞开启时 collision 段损坏或缺失, 节点构造必须抛异常 (缺失时为 RuntimeError 且提及 collision)。
-def test_enabled_collision_with_broken_model_refuses_to_start(node_factory):
+# collision 段损坏或缺失, 节点构造必须抛异常 (缺失时为 RuntimeError 且提及 collision)。
+def test_broken_collision_model_refuses_to_start(node_factory):
     # TODO(注释): 损坏模型只断言 Exception, 具体异常类型/消息未约束, 是否有意放宽?
     with pytest.raises(Exception):
-        node_factory(collision_enabled=True, collision_cfg={"station": {}, "arm": {"capsules": []}})
+        node_factory(collision_cfg={"station": {}, "arm": {"capsules": []}})
     with pytest.raises(RuntimeError, match="collision"):
-        node_factory(collision_enabled=True, collision_cfg=None)
+        node_factory(collision_cfg=None)
 
 
-# 碰撞开启时 ApproachRequest 未填 station_pose 必须失败, 错误提及 station_pose。
+# 没装 OMPL 时节点构造必须失败, 不退化成直线插值。
+def test_missing_ompl_refuses_to_start(node_factory, monkeypatch):
+    import builtins
+
+    original_import = builtins.__import__
+
+    def no_ompl(name, *args, **kwargs):
+        if name == "ompl" or name.startswith("ompl."):
+            raise ImportError("no ompl (test)")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_ompl)
+    with pytest.raises(RuntimeError, match="OMPL"):
+        node_factory()
+
+
+# ApproachRequest 未填 station_pose 必须失败, 错误提及 station_pose。
 def test_approach_requires_station_pose(node_factory, arm, station):
     node = node_factory()
     ok, message = _approach(node, _approach_request(arm, station, SAFE_START, fill_station=False))
@@ -158,12 +162,11 @@ def test_approach_rejects_colliding_start(node_factory, arm, station):
     assert "起点" in message
 
 
-# 碰撞开启时正常接近请求应成功, 且结果不带 UNCHECKED_TAG。
-def test_approach_succeeds_with_collision_on(node_factory, arm, station):
+# 正常接近请求应成功。
+def test_approach_succeeds(node_factory, arm, station):
     node = node_factory()
     ok, message = _approach(node, _approach_request(arm, station, SAFE_START))
     assert ok, message
-    assert UNCHECKED_TAG not in message
 
 
 # 发布前稠密碰撞复检: 轨迹中点被替换成碰撞构型时必须拒绝, message 含 collides。
@@ -196,16 +199,38 @@ def test_dense_collision_fails_final_check(node_factory, arm, station, monkeypat
     assert "collides" in message
 
 
-# 碰撞关闭时不建碰撞模型, 不填 station_pose 也能成功, 但 message 带 UNCHECKED_TAG。
-def test_collision_off_marks_result_unchecked(node_factory, arm, station):
-    node = node_factory(collision_enabled=False)
-    assert node.collision_model is None
-    ok, message = _approach(node, _approach_request(arm, station, SAFE_START, fill_station=False))
-    assert ok, message
-    assert UNCHECKED_TAG in message
+# 两段回调都把请求的 request_id 原样写进结果, 成功和失败都一样。
+def test_results_echo_request_id(node_factory, arm, station, monkeypatch):
+    node = node_factory()
+    published = []
+    monkeypatch.setattr(node.approach_result_pub, "publish", published.append)
+    monkeypatch.setattr(node.assembly_result_pub, "publish", published.append)
+
+    ok_request = _approach_request(arm, station, SAFE_START)
+    ok_request.request_id = "approach-ok"
+    node._on_approach_request(ok_request)
+    bad_request = _approach_request(arm, station, SAFE_START, fill_station=False)
+    bad_request.request_id = "approach-bad"
+    node._on_approach_request(bad_request)
+    assembly_request = AssemblyRequest()
+    assembly_request.header.frame_id = "arm_base"
+    assembly_request.request_id = "assembly-bad"  # station_pose 没填, 必失败
+    node._on_assembly_request(assembly_request)
+
+    assert [(r.request_id, r.success) for r in published] == [
+        ("approach-ok", True),
+        ("approach-bad", False),
+        ("assembly-bad", False),
+    ]
+    # 结构化诊断: 成功为空串 + 0; 失败给稳定分类, 不再只靠 message 字符串
+    assert [(r.error_code, r.repaired_nodes) for r in published] == [
+        ("", 0),
+        (node_module.ERROR_INVALID_REQUEST, 0),
+        (node_module.ERROR_INVALID_REQUEST, 0),
+    ]
 
 
-# 装配段成功路径: 最终 validate_trajectory 必须收到 collision_checker, 结果不带 UNCHECKED_TAG。
+# 装配段成功路径: 最终 validate_trajectory 必须收到 collision_checker。
 def test_assembly_success_runs_dense_collision_check(node_factory, arm, station, monkeypatch):
     """装配段成功路径也必须经过带碰撞检查器的最终校验。"""
     node = node_factory()
@@ -232,11 +257,12 @@ def test_assembly_success_runs_dense_collision_check(node_factory, arm, station,
     result = AssemblyResult()
     result.header.stamp = node.get_clock().now().to_msg()
     success, message = node._plan_assembly(msg, result)
-    # 断言: 成功、复检带检查器、无 UNCHECKED_TAG、轨迹非空
+    # 断言: 成功、复检带检查器、轨迹非空、结构化诊断字段已填
     assert success, message
     assert seen.get("checker") is not None
-    assert UNCHECKED_TAG not in message
     assert len(result.trajectory.points) > 0
+    assert result.error_code == ""
+    assert result.repaired_nodes == 0
 
 
 # 接近段默认只用装配段的 IK 分支 (两段衔接); 接近终点必须落在该分支上。

@@ -8,16 +8,17 @@
 两段的算法分工 (仿 RM2026-Engineer-Assembly-Algorithm 的 arm_exchange_host/planning_node.py):
     接近段 type2: 对请求里的 target_pose 求 IK, 在候选解里挑"离起始关节角最省力"的一组,
         再用 OMPL BIT* 在关节空间搜一条不越限、不碰撞的稀疏路径 (planning/type2.py);
-        没装 OMPL 时退化成 起点->终点 直线插值, 并在 result.message 里注明。
+        没装 OMPL 时节点起不来, 不退化成直线。
         碰撞场景按请求里的 station_pose 摆 (站体 + 局部桩体), 起点碰撞直接拒绝。
     装配段 type3: 把 AssemblyState 目标铺成流形上的一串状态, 按 roll 离散建分层图,
         Viterbi 选一串连续关节路点, 必要时走 best_ik 尽力修复 (planning/type3.py)。
 
 两段最后都用 FixedDurationParameterizer 做定时长五次多项式采样, 出稠密
 trajectory_msgs/JointTrajectory (位置/速度/加速度/time_from_start 齐全)。
-发布前过 validate_trajectory: 有限值 / 首末点 / 限位, 碰撞开启时逐个稠密采样点查碰撞。
-碰撞默认开 (collision.enabled=true), 开着却构不出模型时节点起不来; 显式关掉时成功 message 带
-UNCHECKED_TAG。
+发布前过 validate_trajectory: 有限值 / 首末点 / 限位, 并逐个稠密采样点查碰撞。
+碰撞检测没有开关, 构不出碰撞模型 (hpp-fcl / 网格 / config 缺失) 时节点起不来。
+
+请求带 request_id, 结果原样回显 (同 RM2026); 请求方据此丢弃迟到/作废的结果。
 
 位姿一律在 arm_base 系; 关节名取 rm26_arm 的 J1..J6 (与 URDF/MJCF 一致)。
 
@@ -72,8 +73,45 @@ JOINT_NAMES = ("J1", "J2", "J3", "J4", "J5", "J6")
 FRAME_ARM_BASE = "arm_base"
 #: 起始关节角落在限位外多少弧度内算"测量噪声", 直接夹回去而不报错
 BOUND_TOLERANCE_RAD = 1e-3
-#: 碰撞检测关闭时写进成功 message 的标记; 执行层见到它不得当作已验证轨迹
-UNCHECKED_TAG = "UNCHECKED collision=off"
+
+# 结果里的机器可读失败分类。空串表示成功; 其余值与 message 文案解耦, 执行侧只认这些值。
+ERROR_INVALID_REQUEST = "INVALID_REQUEST"
+ERROR_IK_UNREACHABLE = "IK_UNREACHABLE"
+ERROR_COLLISION = "COLLISION"
+ERROR_TRAJECTORY_INVALID = "TRAJECTORY_INVALID"
+ERROR_PLANNER_FAILED = "PLANNER_FAILED"
+ERROR_INTERNAL = "INTERNAL"
+
+
+def _classify_exception(exc: Exception) -> str:
+    """把规划异常归到稳定的 error_code (message 仍保留完整上下文给日志/人看)。"""
+    message = str(exc)
+    # 先判碰撞/轨迹校验: validate_trajectory 抛的是 ValueError, 但语义不是"输入非法"。
+    if "碰撞" in message or "collision" in message.lower():
+        return ERROR_COLLISION
+    if "trajectory" in message.lower() or "校验" in message:
+        return ERROR_TRAJECTORY_INVALID
+    if isinstance(exc, ValueError):
+        return ERROR_INVALID_REQUEST
+    if not isinstance(exc, RuntimeError):
+        return ERROR_INTERNAL
+    # 先判碰撞: "target_pose 的所有 IK 解都与兑换站碰撞" 同时含 IK 和碰撞, 碰撞更具体。
+    if "无解" in message or "IK" in message:
+        return ERROR_IK_UNREACHABLE
+    return ERROR_PLANNER_FAILED
+
+
+def _classify_plan_failure(plan) -> str:
+    """把 type3 的 success=False 结果归到 error_code。"""
+    message = str(plan.message)
+    if "collision" in message.lower() or "碰撞" in message:
+        return ERROR_COLLISION
+    if "ik" in message.lower() or "无解" in message:
+        return ERROR_IK_UNREACHABLE
+    if "start" in message.lower() or "mismatch" in message.lower():
+        return ERROR_INVALID_REQUEST
+    return ERROR_PLANNER_FAILED
+
 
 # Pose (位置 m + 四元数) 转 4x4 齐次矩阵; 四元数先归一化, 零/非有限值直接拒绝
 def _transform_from_pose(pose: Pose) -> np.ndarray:
@@ -148,14 +186,14 @@ def _dense_trajectory_to_msg(trajectory: CoreJointTrajectory, *, stamp) -> Joint
 
 # 发布前最后一道关: 调 validate_trajectory, 通过后只汇报峰值速度/加速度
 def _checked_trajectory(
-    trajectory: CoreJointTrajectory, joint_space, waypoints: np.ndarray, collision_checker=None
+    trajectory: CoreJointTrajectory, joint_space, waypoints: np.ndarray, collision_checker
 ) -> str:
     """发布前的最终校验 (不过则抛 ValueError), 返回峰值速度/加速度摘要。
 
-    有碰撞检查器时逐个稠密采样点查碰撞。 config 没有真实速度/加速度上限, 这里不查,
+    逐个稠密采样点查碰撞。 config 没有真实速度/加速度上限, 这里不查,
     只把峰值写进 message 供人工核对。
     """
-    # 有限值 / 首末点对齐 waypoints / 关节限位 / (可选) 逐点碰撞, 任一不过抛 ValueError
+    # 有限值 / 首末点对齐 waypoints / 关节限位 / 逐点碰撞, 任一不过抛 ValueError
     validate_trajectory(
         trajectory, joint_space, waypoints=waypoints, collision_checker=collision_checker
     )
@@ -244,12 +282,6 @@ class PlanningNode(Node):
         )
         if not self.approach_ik_branches:
             raise ValueError("approach.ik_branches 不能为空")
-        # 碰撞检测默认开: 依赖 hpp-fcl 与站体网格 (config 的 collision.station.asset_dir,
-        # 即 src/runtime/sim/model/exchange_station/)。 开着时模型构造失败直接让节点起不来;
-        # 显式关掉只用于演示, 成功结果的 message 会带 UNCHECKED_TAG。
-        self.declare_parameter("collision.enabled", True)
-        self.collision_enabled = bool(self.get_parameter("collision.enabled").value)
-
         # ---- 算法对象 ----
         # 臂模型 (FK/IK/关节空间), ik_type 由 config 的 arm.ik_type 决定
         self.arm = ArmModel.from_config(arm_cfg)
@@ -280,8 +312,14 @@ class PlanningNode(Node):
         # 两段各一个定时长五次多项式参数化器
         self.approach_parameterizer = FixedDurationParameterizer(self.approach_duration_s)
         self.assembly_parameterizer = FixedDurationParameterizer(self.assembly_duration_s)
-        # 碰撞模型 (可能为 None, 见 _load_collision_model)
+        # 碰撞模型: 依赖 hpp-fcl 与站体网格 (config 的 collision.station.asset_dir,
+        # 即 src/runtime/sim/model/exchange_station/); 构造失败直接让节点起不来
         self.collision_model = self._load_collision_model(config.get("collision"))
+        # OMPL 是接近段唯一的路径规划后端, 启动时就确认装了, 不等第一次请求才失败
+        try:
+            import ompl.geometric  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(f"接近段需要 OMPL (BIT*), 导入失败: {exc}") from exc
 
         # BIT* 的采样边界: 连续关节 (config 里限位写 null) 折到 [-pi, pi]
         self.joint_lower = np.where(
@@ -315,8 +353,7 @@ class PlanningNode(Node):
             f"roll_count={len(self.type3_planner.rolls)} "
             f"assembly_path_samples={self.assembly_path_samples} "
             f"assembly_start_axial_m={self.assembly_start_axial_m:.4f} "
-            f"approach_ik_branches={list(self.approach_ik_branches)} "
-            f"collision={'on' if self.collision_model is not None else 'off'}"
+            f"approach_ik_branches={list(self.approach_ik_branches)}"
         )
 
     # 声明一个 float 型 ROS 参数 (默认值来自 config) 并返回实际生效值
@@ -326,30 +363,21 @@ class PlanningNode(Node):
 
     # 构造全局碰撞模型 (站体网格 + 局部桩体网格 + 臂胶囊体), 整个节点生命周期复用
     def _load_collision_model(self, collision_cfg):
-        """按需构造碰撞模型; 关着返回 None。 开着却构不出来 (hpp-fcl / 网格 / config 缺失) 直接抛异常,
-        不允许静默降级成"不查碰撞"。"""
-        # 显式关闭: 只告警, 返回 None, 后续所有检查器都为 None
-        if not self.collision_enabled:
-            self.get_logger().warning(
-                f"collision.enabled=false: 规划不查碰撞, 结果带 {UNCHECKED_TAG}, 不得用于真机"
-            )
-            return None
-        # 开启但缺配置/依赖: 抛异常让节点启动失败; hpp-fcl 依赖延迟导入
+        """构造碰撞模型; 构不出来 (hpp-fcl / 网格 / config 缺失) 直接抛异常, 不允许降级成"不查碰撞"。"""
+        # 缺配置/依赖: 抛异常让节点启动失败; hpp-fcl 依赖延迟导入
         if not collision_cfg:
-            raise RuntimeError("collision.enabled=true 但 config 里没有 collision 段")
+            raise RuntimeError("config 里没有 collision 段, 规划必须查碰撞")
         from planning.collision import CollisionModel
 
         return CollisionModel.from_config(collision_cfg)
 
     # 按本次请求的站位姿 (arm_base 系 4x4) 摆放网格, 建一次性检查器
     def _make_collision_checker(self, station_transform: np.ndarray, *, stage: str):
-        """给定兑换站位姿建一次性碰撞检查器; 没有碰撞模型时返回 None。
+        """给定兑换站位姿建一次性碰撞检查器。
 
         场景见 CollisionModel.scene_groups: 站体 + 桩体 + 车体 / 地面; stage="assembly" 时桩体对
         config 的 collision.station.assembly_allowed_contact 豁免 (允许接触规则)。
         """
-        if self.collision_model is None:
-            return None
         from planning.collision import CollisionChecker
 
         return CollisionChecker(
@@ -357,10 +385,6 @@ class PlanningNode(Node):
             self.collision_model.scene_groups(station_transform, stage=stage),
             self.collision_model.arm_capsules,
         )
-
-    # 碰撞关闭时给成功 message 追加 UNCHECKED_TAG, 开启时为空串
-    def _unchecked_suffix(self) -> str:
-        return "" if self.collision_model is not None else f" {UNCHECKED_TAG}"
 
     # 输入 (6,) 或 (B, 6), 输出 (B, 6); 超限超过 BOUND_TOLERANCE_RAD 才报错, 噪声范围内夹回
     def _to_type2_bounds(self, joints: np.ndarray) -> np.ndarray:
@@ -405,6 +429,9 @@ class PlanningNode(Node):
         result = ApproachResult()
         result.header.stamp = self.get_clock().now().to_msg()
         result.header.frame_id = FRAME_ARM_BASE
+        result.request_id = msg.request_id
+        result.repaired_nodes = 0  # 接近段没有 best_ik 修复
+        result.error_code = ""
         started = time.perf_counter()
         try:
             result.message = self._plan_approach(msg, result)
@@ -412,12 +439,16 @@ class PlanningNode(Node):
         except Exception as exc:  # 任何一步失败都回一条失败结果, 不让节点挂掉
             result.success = False
             result.message = f"{type(exc).__name__}: {exc}"
+            result.error_code = _classify_exception(exc)
             result.trajectory = JointTrajectoryMsg()
-            self.get_logger().warning(f"接近段规划失败: {result.message}")
+            self.get_logger().warning(
+                f"接近段规划失败 id={msg.request_id} error_code={result.error_code}: {result.message}"
+            )
         # 成功分支: 记录稠密点数、轨迹时长、规划耗时
         else:
             self.get_logger().info(
                 "接近段规划成功 "
+                f"id={msg.request_id} "
                 f"dense_steps={len(result.trajectory.points)} "
                 f"duration_s={self.approach_duration_s:.3f} "
                 f"elapsed_s={time.perf_counter() - started:.3f} "
@@ -440,16 +471,14 @@ class PlanningNode(Node):
             f"timeout_s={timeout_s:.3f}"
         )
 
-        # 碰撞开启时: station_pose 必填, 按站位姿建检查器 (含局部桩体), 并先验起点不碰撞
-        collision_checker = None
-        if self.collision_model is not None:
-            if msg.station_pose == Pose():
-                # 默认 Pose 是 arm_base 原点 + 单位姿态, 物理上不可能是站位, 视为没填
-                raise ValueError("碰撞开启时 ApproachRequest.station_pose 必填 (收到默认 Pose)")
-            station = _transform_from_pose(msg.station_pose)
-            collision_checker = self._make_collision_checker(station, stage="approach")
-            if bool(collision_checker.check_configs(start_joint[None, :])[0]):
-                raise RuntimeError("接近段起点 start_joint 已与兑换站碰撞")
+        # station_pose 必填, 按站位姿建检查器 (含局部桩体), 并先验起点不碰撞
+        if msg.station_pose == Pose():
+            # 默认 Pose 是 arm_base 原点 + 单位姿态, 物理上不可能是站位, 视为没填
+            raise ValueError("ApproachRequest.station_pose 必填 (收到默认 Pose)")
+        station = _transform_from_pose(msg.station_pose)
+        collision_checker = self._make_collision_checker(station, stage="approach")
+        if bool(collision_checker.check_configs(start_joint[None, :])[0]):
+            raise RuntimeError("接近段起点 start_joint 已与兑换站碰撞")
         # 在 IK 候选里选终点关节角 (有效 + 无碰撞 + 运动代价最小)
         goal_joint, goal_cost = self._select_approach_goal(target, start_joint, collision_checker)
         self.get_logger().info(
@@ -457,35 +486,23 @@ class PlanningNode(Node):
             f"goal_joint={np.round(goal_joint, 4).tolist()} motion_cost={goal_cost:.6f}"
         )
 
-        # BIT* 的状态合法性回调: 无碰撞检查器时恒为合法, 否则单个构型查碰撞
-        if collision_checker is None:
-            def validity_fn(joints: np.ndarray) -> bool:
-                return True
-        else:
-            def validity_fn(joints: np.ndarray) -> bool:
-                return not bool(
-                    collision_checker.check_configs(np.asarray(joints, dtype=float)[None, :])[0]
-                )
-
-        # 优先用 OMPL BIT* 搜稀疏路径 waypoints (K, 6); ImportError 时退化为直线
-        note = "ok"
-        try:
-            from planning.type2 import plan_joint_path_bitstar
-
-            waypoints = plan_joint_path_bitstar(
-                start_joint,
-                goal_joint,
-                validity_fn=validity_fn,
-                joint_lower=self.joint_lower,
-                joint_upper=self.joint_upper,
-                timeout_s=timeout_s,
+        # BIT* 的状态合法性回调: 单个构型查碰撞
+        def validity_fn(joints: np.ndarray) -> bool:
+            return not bool(
+                collision_checker.check_configs(np.asarray(joints, dtype=float)[None, :])[0]
             )
-        except ImportError as exc:
-            # OMPL 是系统级可选后端; 没装就退化成两点直线插值, 让通路仍然闭环。
-            # 这条直线没经过规划器的合法性检查, 靠下面的稠密轨迹碰撞复检把关。
-            self.get_logger().warning(f"OMPL 不可用, 接近段退化为关节空间直线插值: {exc}")
-            waypoints = np.stack((start_joint, goal_joint))
-            note = "ok degraded=straight_line (OMPL 不可用)"
+
+        # OMPL BIT* 搜稀疏路径 waypoints (K, 6); OMPL 已在启动时确认可用
+        from planning.type2 import plan_joint_path_bitstar
+
+        waypoints = plan_joint_path_bitstar(
+            start_joint,
+            goal_joint,
+            validity_fn=validity_fn,
+            joint_lower=self.joint_lower,
+            joint_upper=self.joint_upper,
+            timeout_s=timeout_s,
+        )
 
         # 稀疏路径 -> 定时长稠密轨迹, 校验通过后转成消息填入 result
         trajectory = self.approach_parameterizer.parameterize(
@@ -500,8 +517,8 @@ class PlanningNode(Node):
             f"dense_steps={int(trajectory.positions.shape[0])} "
             f"sample_dt={self.approach_sample_dt:.4f}"
         )
-        # message = 规划说明 + 峰值摘要 + (碰撞关闭时) UNCHECKED_TAG
-        return f"{note} {peaks}{self._unchecked_suffix()}"
+        # message = 规划说明 + 峰值摘要
+        return f"ok {peaks}"
 
     def _select_approach_goal(
         self,
@@ -520,11 +537,10 @@ class PlanningNode(Node):
             )
         # 候选折进采样盒 (超限会抛错), 再剔除碰撞解
         candidates = self._to_type2_bounds(candidates)
-        if collision_checker is not None:
-            free = ~collision_checker.check_configs(candidates)
-            if not np.any(free):
-                raise RuntimeError("target_pose 的所有 IK 解都与兑换站碰撞")
-            candidates = candidates[free]
+        free = ~collision_checker.check_configs(candidates)
+        if not np.any(free):
+            raise RuntimeError("target_pose 的所有 IK 解都与兑换站碰撞")
+        candidates = candidates[free]
         # 按相对起始关节角的运动代价挑最省力的一组
         costs = self._motion_cost(candidates, start_joint)
         best = int(np.argmin(costs))
@@ -536,19 +552,28 @@ class PlanningNode(Node):
         result = AssemblyResult()
         result.header.stamp = self.get_clock().now().to_msg()
         result.header.frame_id = FRAME_ARM_BASE
+        result.request_id = msg.request_id
+        result.repaired_nodes = 0
+        result.error_code = ""
         started = time.perf_counter()
         try:
             success, message = self._plan_assembly(msg, result)
         except Exception as exc:
             success, message = False, f"{type(exc).__name__}: {exc}"
+            result.error_code = _classify_exception(exc)
             result.trajectory = JointTrajectoryMsg()
-            self.get_logger().warning(f"装配段规划异常: {message}")
+            self.get_logger().warning(
+                f"装配段规划异常 id={msg.request_id} error_code={result.error_code}: {message}"
+            )
         # 统一写 success/message, 按成败选日志级别, 最后发布
         result.success = success
         result.message = message
         level = self.get_logger().info if success else self.get_logger().warning
         level(
             f"装配段规划{'成功' if success else '失败'} "
+            f"id={msg.request_id} "
+            f"error_code={result.error_code} "
+            f"repaired_nodes={result.repaired_nodes} "
             f"dense_steps={len(result.trajectory.points)} "
             f"elapsed_s={time.perf_counter() - started:.3f} "
             f"message={message}"
@@ -589,7 +614,7 @@ class PlanningNode(Node):
         )
 
         # 装配段检查器**放**局部桩体, 但对 assembly_allowed_contact 里的胶囊豁免
-        # (原因见 _make_collision_checker); 碰撞关闭时为 None
+        # (原因见 _make_collision_checker)
         collision_checker = self._make_collision_checker(station, stage="assembly")
         plan = self.type3_planner.plan(
             path,
@@ -599,7 +624,12 @@ class PlanningNode(Node):
         )
         # 先打诊断再判成败, 失败时日志里能看出是 IK 不可达还是碰撞挡住
         self._log_assembly_diagnostics(plan)
+        # best_ik 修复节点数: 严格 Viterbi 成功时为 0; 失败结果也保留尝试修复的数量供诊断
+        repair = plan.diagnostics.get("repair")
+        if repair is not None:
+            result.repaired_nodes = int(repair.get("repair_count", 0))
         if not plan.success:
+            result.error_code = _classify_plan_failure(plan)
             return False, plan.message
 
         # Viterbi 路点 -> 定时长稠密轨迹; 最终校验失败按规划失败返回而非抛异常
@@ -613,6 +643,7 @@ class PlanningNode(Node):
                 trajectory, self.arm.joint_space, plan.waypoints, collision_checker
             )
         except ValueError as exc:
+            result.error_code = ERROR_TRAJECTORY_INVALID
             return False, f"final trajectory check failed: {exc}"
         # 填消息并记录路点数、稠密点数、图代价与每个路点的 roll (deg)
         result.trajectory = _dense_trajectory_to_msg(trajectory, stamp=result.header.stamp)
@@ -620,9 +651,11 @@ class PlanningNode(Node):
             f"装配段路径 waypoint_steps={int(plan.waypoints.shape[0])} "
             f"dense_steps={int(trajectory.positions.shape[0])} "
             f"cost={float(plan.cost):.6f} "
+            f"repaired_nodes={result.repaired_nodes} "
             f"roll_deg={np.round(np.rad2deg(plan.rolls), 2).tolist()}"
         )
-        return True, f"{plan.message} {peaks}{self._unchecked_suffix()}"
+        result.error_code = ""
+        return True, f"{plan.message} {peaks}"
 
     def _assembly_state(self, goal: AssemblyStateMsg) -> AssemblyState:
         """interfaces/AssemblyState -> planning 的流形状态。
@@ -647,7 +680,6 @@ class PlanningNode(Node):
             "装配段建图 "
             f"valid_nodes={int(diagnostics['final_valid_nodes'])}/{int(diagnostics['total_nodes'])} "
             f"ik_valid_nodes={int(diagnostics['ik_valid_nodes'])} "
-            f"collision={'on' if self.collision_model is not None else 'off'} "
             f"collision_rejected={int(diagnostics['collision_rejected_nodes'])} "
             f"path_samples={int(diagnostics['path_samples'])} "
             f"roll_count={int(diagnostics['roll_count'])} "
