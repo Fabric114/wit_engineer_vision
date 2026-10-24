@@ -3,23 +3,21 @@
 
 与 assembly_demo.py 的区别 (2026-10-17):
   - 站体按规则摆: sim 的 config/sim.yaml station.rmuc (科技核心位姿 + 底盘在装配坐标系里的位置), 不是 from_joint;
-  - 滑动段 "能推多远推多远": 先请求满行程 (config 的 slide_z_mag), 规划失败就每次减 --slide-step 再请求,
-    直到成功或减到 --min-slide; 科技核心的期望滑动量用实际规划成功的那个值核对。
+  - 2026-10-24 起滑动段不再"能推多远推多远": 目标固定 slide_z_mag, 失败就报失败。
 
-level (--level, 默认 3): 1 = 接近 + 插到底; 2 = 再加滑动; 3 = 滑动后接 P/Q 段 (P/Q 还没做, 到这里结束)。
+level (--level, 默认 3): 1 = 接近 + 插到底; 2 = 再加滑动; 3 = 滑动后接 P 段 (rm26 兑不了三级矿, 预期失败)。
 科技核心 (sim 里的 exchange_column) 带 step3_slide 关节, 由 sim 的 column 插件跟随 TCP 移动;
-本脚本订阅 /sim/exchange_column/joint_states 核对: 插到底后滑动量 ≈ 0, 滑动完 ≈ 规划的滑动量。
+本脚本订阅 /sim/exchange_column/joint_states 核对: 插到底后滑动量 ≈ 0, 滑动完 ≈ slide_z_mag。
 
 流程:
     1. 等 /mcu/arm/state (起始关节) 和 /vision/exchange_pose (sim 真值站姿, arm_base 系)
-    2. 接近段: 待插位姿 = 装配首状态 (沿站轴退开 assembly.start_axial_m, 默认 0.15 m),
-       roll 取在装配 IK 分支上 "待插 / 插到底" 都有解的那个; 发 ApproachRequest (带 station_pose),
-       收到结果后按 time_from_start 回放到 /host/arm/command
+    2. 接近段: 发 ApproachRequest (initial_joint_state + station_pose_arm_base); 待插目标
+       (沿站轴退开 insert_slide_mag) 由 planning_node 扫 roll 自选。 收到结果后按 time_from_start 回放
     3. 按 Enter: **直接跳到插到底** —— 代替操作手手动插入 (RM2026 里插入就是手动的)。
-       目标关节 = 插到底位姿在装配分支上的 IK 解, 关节空间线性插值过去。
+       目标关节 = 插到底位姿在装配分支上、离接近终点最近的 IK 解, 关节空间线性插值过去。
        ⚠️ 这一步不经过规划、不查碰撞, 只是演示用的"瞬移"
-    4. 滑动段: 发 AssemblyRequest(use_start=true, start=插到底, goal=slide 到 slide_z_mag),
-       start_joint 取跳完后的实测关节角; 收到结果后回放
+    4. 滑动段: 发 AssemblyRequest(path_name=PATH_SLIDE), 起点 = 跳完后的实测关节角; 收到结果后回放
+    5. level 3: 发 PATH_P (附 Q 缓存)。 rm26 兑不了三级矿, sim 站姿下预期规划失败
 
 跑法 (三个终端, 碰撞检测是 planning_node 的默认, 不用加参数):
     ros2 run sim sim_node
@@ -50,7 +48,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from replay_planning_demo import mat_to_pose, pose_to_mat, sample  # noqa: E402
+from replay_planning_demo import joint_state_msg, pose_to_mat, sample, station_pose_msg  # noqa: E402
 
 from planning import ArmModel, Type3Planner, load_config  # noqa: E402
 from planning.type3 import AssemblyPath, AssemblyState  # noqa: E402
@@ -130,6 +128,15 @@ class AssemblyDemo(Node):
     def station(self) -> np.ndarray:
         return pose_to_mat(self._station.pose)
 
+    @property
+    def station_stamp(self):
+        return self._station.header.stamp
+
+    @property
+    def joints_msg(self):
+        """当前关节角的 JointState (stamp 取 ArmMcuState 的采样时间)。"""
+        return joint_state_msg(self.joints, self._state.header.stamp)
+
     def send_command(self, q: np.ndarray) -> None:
         msg = ArmHostCommand()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -202,21 +209,18 @@ class Geometry:
             return f"{ORE_CAPSULE} 不在 collision.station.assembly_allowed_contact 里 (插入后必然判碰撞)"
         return None
 
-    def poses(self, state: AssemblyState, station: np.ndarray, roll: float) -> np.ndarray:
-        return self.planner.task_poses(AssemblyPath(state.as_array()[None]), station, np.array([roll]))[0]
+    def nearest_inserted(self, station: np.ndarray, reference: np.ndarray) -> np.ndarray | None:
+        """插到底 (AssemblyState()) 在装配分支上的 IK 解里离 reference (接近终点) 最近的那个; 全无解返回 None。
 
-    def solve(self, pose: np.ndarray, reference: np.ndarray):
-        joints, valid = self.arm.solve_ik(pose[None], branches=(self.branch,), reference_joints=reference)
-        return (joints[0, 0], True) if valid[0, 0] else (None, False)
-
-    def pick_roll(self, station: np.ndarray, axial_m: float, reference: np.ndarray) -> float:
-        """在装配分支上 "待插" 与 "插到底" 都有 IK 解的 roll 里, 取离 0 最近的。"""
-        for degrees in sorted(np.arange(-180.0, 180.0, 5.0), key=abs):
-            roll = np.deg2rad(degrees)
-            approach, ok_a = self.solve(self.poses(AssemblyState(axial_offset_m=axial_m), station, roll), reference)
-            if ok_a and self.solve(self.poses(AssemblyState(), station, roll), approach)[1]:
-                return float(roll)
-        raise RuntimeError(f"装配 IK 分支 {self.branch} 上找不到 待插/插到底 都可解的 roll —— 换站姿或分支")
+        接近目标的 roll 由 planning_node 选, 脚本不知道; 这里扫 type3 的 roll 网格反找。
+        """
+        poses = self.planner.task_poses(AssemblyPath(AssemblyState().as_array()[None]), station, self.planner.rolls)
+        joints, valid = self.arm.solve_ik(poses, branches=(self.branch,), reference_joints=reference)
+        candidates = joints[valid[:, 0], 0]
+        if not len(candidates):
+            return None
+        jumps = np.max(np.abs(self.arm.joint_space.delta(candidates, np.asarray(reference)[None, :])), axis=1)
+        return candidates[int(np.argmin(jumps))]
 
 
 def check_column(node: AssemblyDemo, expected_m: float, label: str) -> bool:
@@ -230,26 +234,36 @@ def check_column(node: AssemblyDemo, expected_m: float, label: str) -> bool:
     return ok
 
 
-def _assembly_state(msg, state: AssemblyState) -> None:
-    msg.axial, msg.slide = state.axial_offset_m, state.slide_m
-    msg.p_angle, msg.q_angle = state.p_angle_rad, state.q_angle_rad
-    msg.release = False
+def plan_assembly(node: AssemblyDemo, station: np.ndarray, path_name: int, timeout: float, label: str):
+    """发一条装配段请求 (起点 = 此刻实测关节角), 成功返回结果, 失败/超时打日志返回 None。"""
+    log = node.get_logger()
+    req = AssemblyRequest()
+    req.header.stamp = node.get_clock().now().to_msg()
+    req.header.frame_id = "arm_base"
+    req.initial_joint_state = node.joints_msg
+    req.station_pose_arm_base = station_pose_msg(station, node.station_stamp)
+    req.path_name = path_name
+    node.request("assembly", req)
+    log.info(f"[{label}] 已发请求 (path_name={path_name}), 等结果 ...")
+    if not node.wait("assembly", timeout):
+        log.error(f"[{label}] 等结果超时")
+        return None
+    res = node.result("assembly")
+    if not res.success:
+        log.error(f"[{label}] 规划失败 ({res.error_code}): {res.message}")
+        return None
+    log.info(f"[{label}] 规划成功 cost={res.cost:.4f} roll={np.degrees(res.selected_roll):.1f}°: {res.message}")
+    return res
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="sim 演示 (RMUC2026 规则三级站姿): 接近 -> 跳到插到底 -> 能推多远推多远")
-    ap.add_argument("--axial", type=float, default=None,
-                    help="待插位姿沿站轴退开多少米 (默认取 config 的 insert_slide_mag, 与装配段起点一致)")
-    ap.add_argument("--slide", type=float, default=None, help="滑动距离上限 m (默认 config 的 slide_z_mag)")
-    ap.add_argument("--slide-step", type=float, default=0.005, help="滑动规划失败时每次缩短多少 m")
-    ap.add_argument("--min-slide", type=float, default=0.005, help="缩到这个值还失败就放弃 (m)")
+    ap = argparse.ArgumentParser(description="sim 演示 (RMUC2026 规则三级站姿): 接近 -> 跳到插到底 -> 滑动 -> P")
     ap.add_argument("--rate", type=float, default=100.0, help="回放频率 Hz")
-    ap.add_argument("--bit-timeout", type=float, default=2.0, help="接近段 BIT* 超时 s")
     ap.add_argument("--plan-timeout", type=float, default=30.0, help="等规划结果的秒数")
     ap.add_argument("--jump-s", type=float, default=1.5, help="跳到插到底的插值时长 s")
     ap.add_argument("--no-pause", action="store_true", help="不等按键, 接近完直接跳")
     ap.add_argument("--level", type=int, choices=(1, 2, 3), default=3,
-                    help="1 接近+插到底; 2 再加滑动; 3 滑动后接 P/Q (P/Q 待实现)")
+                    help="1 接近+插到底; 2 再加滑动; 3 滑动后接 P 段 (rm26 兑不了三级矿, P 段预期失败)")
     args = ap.parse_args()
 
     geometry = Geometry()
@@ -257,8 +271,7 @@ def main() -> int:
     if problem:
         print(f"[配置] {problem}", file=sys.stderr)
         return 2
-    axial = float(geometry.geometry["insert_slide_mag"] if args.axial is None else args.axial)
-    slide = float(geometry.geometry["slide_z_mag"] if args.slide is None else args.slide)
+    slide = float(geometry.geometry["slide_z_mag"])
 
     rclpy.init()
     node = AssemblyDemo()
@@ -275,19 +288,15 @@ def main() -> int:
         log.info(f"level {args.level}; 规划碰撞胶囊 {capsules}; 装配段豁免桩体 "
                  f"{geometry.collision['station']['assembly_allowed_contact']}")
         station = node.station
-        roll = geometry.pick_roll(station, axial, node.joints)
-        target = geometry.poses(AssemblyState(axial_offset_m=axial), station, roll)
-        log.info(f"站姿 {np.round(station[:3, 3], 4).tolist()}  装配分支 {geometry.branch}  "
-                 f"roll {np.degrees(roll):.1f}°  待插退开 {axial:.3f} m")
+        log.info(f"站姿 {np.round(station[:3, 3], 4).tolist()}  装配分支 {geometry.branch} "
+                 "(待插目标由 planning_node 自选)")
 
         # ---- 1. 接近段 ----
         req = ApproachRequest()
         req.header.stamp = node.get_clock().now().to_msg()
         req.header.frame_id = "arm_base"
-        req.start_joint = np.asarray(node.joints, dtype=np.float32).tolist()
-        mat_to_pose(target, req.target_pose)
-        mat_to_pose(station, req.station_pose)
-        req.timeout = float(args.bit_timeout)
+        req.initial_joint_state = node.joints_msg
+        req.station_pose_arm_base = station_pose_msg(station, node.station_stamp)
         node.request("approach", req)
         log.info("[接近] 已发请求, 等结果 ...")
         if not node.wait("approach", args.plan_timeout):
@@ -295,17 +304,18 @@ def main() -> int:
             return 1
         res = node.result("approach")
         if not res.success:
-            log.error(f"[接近] 规划失败: {res.message}")
+            log.error(f"[接近] 规划失败 ({res.error_code}): {res.message}")
             return 2
-        log.info(f"[接近] 规划成功: {res.message}")
+        log.info(f"[接近] 规划成功 cost={res.cost:.4f}: {res.message}")
         node.play(res.trajectory, args.rate, "接近")
 
         # ---- 2. 跳到插到底 (代替手动插入, 不查碰撞) ----
         if not args.no_pause:
             input("\n接近段完成。 按 Enter 直接跳到插到底 (代替操作手手动插入) ...")
-        inserted, ok = geometry.solve(geometry.poses(AssemblyState(), station, roll), node.joints)
-        if not ok:
-            log.error("插到底位姿在装配分支上无 IK 解")
+        inserted = geometry.nearest_inserted(station, node.joints)
+        if inserted is None:
+            log.error("接近终点插不到底: 装配分支上所有 roll 的插到底位姿都无 IK 解 "
+                      "(见 todo.md §3 接近段 roll 筛选)")
             return 2
         jump = float(np.max(np.abs(inserted - node.joints)))
         log.info(f"[跳转] 关节空间线性插值到插到底 (最大单轴 {jump:.3f} rad, 不查碰撞)")
@@ -316,40 +326,24 @@ def main() -> int:
             log.info("level 1 完成 (只插入)")
             return 0
 
-        # ---- 3. 滑动段: 能推多远推多远 ----
-        q_inserted = np.asarray(node.joints, dtype=float)
-        target = slide
-        res = None
-        while target >= args.min_slide - 1e-9:
-            req = AssemblyRequest()
-            req.header.stamp = node.get_clock().now().to_msg()
-            req.header.frame_id = "arm_base"
-            req.start_joint = np.asarray(q_inserted, dtype=np.float32).tolist()
-            mat_to_pose(station, req.station_pose)
-            req.use_start = True
-            _assembly_state(req.start, AssemblyState())
-            _assembly_state(req.goal, AssemblyState(slide_m=target))
-            node.request("assembly", req)
-            if not node.wait("assembly", args.plan_timeout):
-                log.error("[滑动] 等结果超时")
-                return 1
-            res = node.result("assembly")
-            if res.success:
-                break
-            log.warning(f"[滑动] slide {target * 1000:.0f} mm 规划失败: {res.message[:120]}")
-            res = None
-            target = round(target - args.slide_step, 6)
+        # ---- 3. 滑动段 (PATH_SLIDE, 目标固定 slide_z_mag, 失败就报失败) ----
+        res = plan_assembly(node, station, AssemblyRequest.PATH_SLIDE, args.plan_timeout, "滑动")
         if res is None:
-            log.error(f"[滑动] 缩到 {args.min_slide * 1000:.0f} mm 仍规划失败")
             return 2
-        slide = target
-        log.info(f"[滑动] 规划成功: slide {slide * 1000:.0f} mm (上限 {geometry.geometry['slide_z_mag'] * 1000:.0f} mm, "
-                 f"规则要求 100 mm) {res.message}")
         node.play(res.trajectory, args.rate, "滑动")
         if not check_column(node, slide, "滑动"):
             return 2
-        if args.level == 3:
-            log.warning("level 3 的 P/Q 段还没做 (科技核心 p_axis/q_axis 固定 0), 到滑动为止")
+        if args.level == 2:
+            log.info("演示完成")
+            return 0
+
+        # ---- 4. P 段 (PATH_P, 附 Q 缓存); rm26 兑不了三级矿, sim 站姿下预期规划失败 ----
+        res = plan_assembly(node, station, AssemblyRequest.PATH_P, args.plan_timeout, "P")
+        if res is None:
+            log.warning("[P] rm26 兑不了三级矿, P 段在 sim 站姿下预期失败")
+            return 2
+        log.info(f"[P] Q 缓存 {len(res.q_sweep_s)} 点 (sim 科技核心 p_axis/q_axis 固定 0, 站体不跟转)")
+        node.play(res.trajectory, args.rate, "P")
         log.info("演示完成")
         return 0
     finally:
