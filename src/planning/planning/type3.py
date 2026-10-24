@@ -18,7 +18,8 @@
   6. 首个路点必须与实测起点 initial_joints 衔接: 差值 ≥ 1e-9 且 ≤ start_joint_tolerance_rad
      时在前面插入 initial 作为第 0 点, 否则判失败。
   另外两条硬逻辑: 相邻路点单轴跳变 > joint_path.max_joint_step_rad 的边直接不可走;
-  末端 continuation 未传时整段跳过 (planning_node 从不传, 生产不可达)。
+  末端 continuation 由 planning_node 的 P 段传入 (Q 0->±90° 两条分支, 合并结果 = Q 缓存);
+  continuation 内相邻点同样受 max_joint_step_rad 约束。 未传时整段跳过。
   最后再做时间参数化 (trajectory.py) 就得到可执行轨迹。
 
 【要懂的概念】
@@ -732,7 +733,7 @@ class Type3Planner:
         }
 
     # 评估一条后续分支: 固定末端 roll 与 IK 分支, 从 start 关节接续求整段关节解, 查碰撞并计算代价。
-    # 返回 (结果 dict 或 None, 原因: ok / ik / repair_tolerance / collision)。
+    # 返回 (结果 dict 或 None, 原因: ok / ik / repair_tolerance / joint_step / collision)。
     def _evaluate_continuation(self, path, station, roll, start, collision_checker):
         config = self.continuation_config
         # 整段使用同一 roll 计算目标位姿并做 IK。
@@ -757,6 +758,13 @@ class Type3Planner:
                 q_ref = joints[index]
         # 整段连续关节 unwrap 并对齐到 start 附近。
         joints = self.arm.joint_space.align_trajectory(joints, np.asarray(start)[None, :])
+        # 相邻点 (含 start -> 首点) 单轴跳变硬门槛, 与主路径的 max_joint_step 同一阈值:
+        # Q 缓存会被执行侧直接插值播放, 跳变 = 未经检查的大幅关节运动 (多为跨腕奇异/分支翻转)。
+        if self.max_joint_step is not None:
+            chain = np.vstack((np.asarray(start)[None, :], joints))
+            steps = np.abs(self.arm.joint_space.delta(chain[1:], chain[:-1]))
+            if float(np.max(steps)) > self.max_joint_step:
+                return None, "joint_step"
         # 碰撞检查: 任一点碰撞即失败, 否则取软间隔惩罚。
         if collision_checker is None:
             collision_penalty = np.zeros(len(joints))

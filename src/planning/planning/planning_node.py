@@ -228,6 +228,17 @@ def _pose_summary(transform: np.ndarray) -> str:
     return f"pos={position} quat_wxyz={np.round(quaternion, 4).tolist()}"
 
 
+# P 段末端 continuation: 以 base (P 终点) 为中心, Q 从 0 分别转到 -90° / +90°, 每 step_deg 一点
+def _q_sweep_paths(base: AssemblyState, step_deg: float) -> tuple[AssemblyPath, AssemblyPath]:
+    """Q 缓存的两条分支 (minus, plus), 同 RM2026 _assembly_paths 的 p 段。"""
+    q = np.deg2rad(np.arange(0.0, 90.0 + 0.5 * step_deg, step_deg))
+    plus = np.repeat(base.as_array()[None, :], len(q), axis=0)
+    minus = plus.copy()
+    plus[:, 3] = q
+    minus[:, 3] = -q
+    return AssemblyPath(minus), AssemblyPath(plus)
+
+
 # 日志用: 汇总 type3 分层图每层有效节点数的分布
 def _step_counts_summary(counts) -> str:
     """分层图每层有效节点数的紧凑摘要 (min/median/max)。"""
@@ -321,6 +332,8 @@ class PlanningNode(Node):
             best_effort=dict(stage_path_cfg.get("best_ik", {})),
             start_joint_tolerance_rad=joint_path_cfg.get("start_joint_tolerance_rad"),
             max_joint_step_rad=joint_path_cfg.get("max_joint_step_rad"),
+            # P 段末端 Q 分支 (Q 缓存) 的采样步长与代价权重
+            continuation=dict(joint_path_cfg["q_sweep"]),
         )
         # 两段各一个定时长五次多项式参数化器
         self.approach_parameterizer = FixedDurationParameterizer(self.approach_duration_s)
@@ -676,8 +689,16 @@ class PlanningNode(Node):
             f"dense_steps={int(trajectory.positions.shape[0])} "
             f"cost={float(plan.cost):.6f} "
             f"repaired_nodes={result.repaired_nodes} "
+            f"q_sweep_points={len(plan.continuation['states']) if plan.continuation else 0} "
             f"roll_deg={np.round(np.rad2deg(plan.rolls), 2).tolist()}"
         )
+        if continuations:
+            if plan.continuation is None:
+                # type3 在要求 continuation 时本应判失败; 这里兜底, 不发空 Q 缓存的成功结果
+                result.error_code = ERROR_PLANNER_FAILED
+                result.trajectory = JointTrajectoryMsg()
+                return False, "P 段缺 Q 缓存 (type3 未返回 continuation)"
+            self._fill_q_sweep_result(result, plan.continuation)
         result.error_code = ""
         result.cost = float(plan.cost)
         result.selected_roll = float(plan.rolls[-1])
@@ -688,18 +709,46 @@ class PlanningNode(Node):
         """path_name -> (装配流形路径, 末端 continuation), 同 RM2026 _assembly_paths。
 
         PATH_SLIDE: 插到底 -> slide_z_mag, 无 continuation;
-        PATH_P: 滑动终点 -> p=90°, continuation = Q 两条分支 (Task 4 接入)。
+        PATH_P: 滑动终点 -> p=90°, continuation = Q 0->-90° / 0->+90° 两条分支; type3 只留
+        两条都走得通的 P 终点, 合并结果就是 Q 缓存。
         """
         inserted = AssemblyState()
         slid = AssemblyState(slide_m=self.assembly_slide_m)
         if path_name == AssemblyRequest.PATH_SLIDE:
             return AssemblyPath.between(inserted, slid, samples=self.assembly_path_samples), ()
         if path_name == AssemblyRequest.PATH_P:
-            raise ValueError("PATH_P 尚未接入")
+            p_done = AssemblyState(slide_m=self.assembly_slide_m, p_angle_rad=0.5 * np.pi)
+            step_deg = float(self.type3_planner.continuation_config["sample_step_deg"])
+            return (
+                AssemblyPath.between(slid, p_done, samples=self.assembly_path_samples),
+                _q_sweep_paths(p_done, step_deg),
+            )
         raise ValueError(
             f"未知 path_name={path_name} (只支持 PATH_SLIDE={AssemblyRequest.PATH_SLIDE} / "
             f"PATH_P={AssemblyRequest.PATH_P})"
         )
+
+    # Q 缓存 -> 消息: q_sweep_s = q / 90° (从 -1 递增到 +1), q_sweep_trajectory 是查找表
+    def _fill_q_sweep_result(self, result: AssemblyResult, continuation: dict) -> None:
+        """把 type3 合并的 continuation 写进结果 (同 RM2026 _fill_q_sweep_result)。
+
+        q_sweep_trajectory 第 i 点 = q_sweep_s[i] 处的关节角, time_from_start = i 秒、速度/加速度 0;
+        不是可播放轨迹, 执行侧按 s 逐关节插值。
+        """
+        states = np.asarray(continuation["states"], dtype=float)
+        joints = np.asarray(continuation["joints"], dtype=float)
+        result.q_sweep_s = [float(v) for v in states[:, 3] / (0.5 * np.pi)]
+        sweep = JointTrajectoryMsg()
+        sweep.header = result.header
+        sweep.joint_names = list(JOINT_NAMES)
+        for index, position in enumerate(joints):
+            point = JointTrajectoryPoint()
+            point.positions = [float(v) for v in position]
+            point.velocities = [0.0] * len(JOINT_NAMES)
+            point.accelerations = [0.0] * len(JOINT_NAMES)
+            point.time_from_start = _seconds_to_duration(float(index))
+            sweep.points.append(point)
+        result.q_sweep_trajectory = sweep
 
     def _log_assembly_diagnostics(self, plan) -> None:
         """打印分层图/尽力修复的诊断, 失败时据此判断是 IK 不可达还是碰撞挡住。"""

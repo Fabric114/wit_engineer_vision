@@ -22,7 +22,7 @@ from geometry_msgs.msg import PoseStamped  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
 
 from planning import ArmModel, FixedDurationParameterizer, load_config  # noqa: E402
-from planning.type3 import AssemblyPath, AssemblyState  # noqa: E402
+from planning.type3 import AssemblyPath, AssemblyState, Type3PlanResult  # noqa: E402
 from planning import planning_node as node_module  # noqa: E402
 from planning.planning_node import JOINT_NAMES, PlanningNode  # noqa: E402
 
@@ -387,3 +387,101 @@ def test_assembly_result_echoes_path_name(node_factory, arm, station, monkeypatc
         (AssemblyRequest.PATH_SLIDE, False),
     ]
 
+
+
+# ---------------------------------------------------------------- P 段 / Q 缓存
+# rm26 在 sim 站姿下 P 段不可解 (2026-10-24 实测), 这里打桩 type3_planner.plan 只测节点的接线:
+# 传给 type3 的路径与 Q 分支、结果里 Q 缓存 / cost / roll 的填法。 type3 本身见 test_type3_continuation.py。
+
+#: 打桩 plan 结果的 diagnostics (只含 _log_assembly_diagnostics 读的键)
+_FAKE_DIAGNOSTICS = {
+    "final_valid_nodes": 3,
+    "total_nodes": 3,
+    "ik_valid_nodes": 3,
+    "collision_rejected_nodes": 0,
+    "path_samples": 3,
+    "roll_count": 1,
+    "ik_branch": 0,
+    "final_valid_by_step": np.ones(3, dtype=int),
+    "repair": None,
+}
+
+
+# 打桩 Q 缓存: q = -90° / 0 / +90°, 关节角各不相同, 方便核对写进消息的顺序。
+def _fake_sweep() -> dict:
+    states = np.zeros((3, 5))
+    states[:, 1] = 0.104
+    states[:, 2] = np.pi / 2
+    states[:, 3] = [-np.pi / 2, 0.0, np.pi / 2]
+    return {"states": states, "joints": SAFE_START + np.arange(3)[:, None] * 0.01, "cost": 0.0}
+
+
+def _fake_plan(continuation) -> Type3PlanResult:
+    return Type3PlanResult(
+        success=True,
+        message="ok",
+        cost=1.5,
+        waypoints=np.tile(SAFE_START, (3, 1)),
+        rolls=np.array([0.0, 0.0, 0.3]),
+        path=[(0, 0), (1, 0), (2, 0)],
+        continuation=continuation,
+        diagnostics=dict(_FAKE_DIAGNOSTICS),
+    )
+
+
+# helper: P 段请求 (起点关节随便给, plan 是打桩的)。
+def _p_request(station) -> AssemblyRequest:
+    msg = AssemblyRequest()
+    msg.header.frame_id = "arm_base"
+    msg.station_pose_arm_base = _pose_stamped(station)
+    msg.initial_joint_state = _joint_state(SAFE_START)
+    msg.path_name = AssemblyRequest.PATH_P
+    return msg
+
+
+# PATH_P: 路径 = 滑动终点 -> p=90°, continuation = Q 0->-90° / 0->+90°; 结果填 Q 缓存 / cost / roll。
+def test_p_path_passes_q_continuations(node_factory, station, monkeypatch):
+    node = node_factory()
+    seen = {}
+
+    def spy(path, station_transform, *, initial_joints, collision_checker, terminal_continuations):
+        seen["path"], seen["continuations"] = path, terminal_continuations
+        return _fake_plan(_fake_sweep())
+
+    monkeypatch.setattr(node.type3_planner, "plan", spy)
+    monkeypatch.setattr(node_module, "_checked_trajectory", lambda *args, **kwargs: "peaks")
+    result = AssemblyResult()
+    success, message = node._plan_assembly(_p_request(station), result)
+    assert success, message
+    # 路径: 起点 slide=slide_z_mag p=0, 终点 p=90°
+    assert seen["path"].states[0, 1] == pytest.approx(node.assembly_slide_m)
+    assert seen["path"].states[0, 2] == pytest.approx(0.0)
+    assert seen["path"].states[-1, 2] == pytest.approx(np.pi / 2)
+    # Q 两条分支: 都从 q=0 出发, 分别到 -90° / +90°, 其余分量 = P 终点
+    minus, plus = seen["continuations"]
+    assert minus.states[0, 3] == pytest.approx(0.0) and minus.states[-1, 3] == pytest.approx(-np.pi / 2)
+    assert plus.states[0, 3] == pytest.approx(0.0) and plus.states[-1, 3] == pytest.approx(np.pi / 2)
+    assert np.allclose(plus.states[:, 2], np.pi / 2) and np.allclose(plus.states[:, 1], node.assembly_slide_m)
+    step = np.deg2rad(node.type3_planner.continuation_config["sample_step_deg"])
+    assert np.allclose(np.diff(plus.states[:, 3]), step)
+    # 结果: Q 缓存 (s = q / 90°), 查找表 time_from_start = 序号, 速度 0
+    assert list(result.q_sweep_s) == pytest.approx([-1.0, 0.0, 1.0])
+    points = result.q_sweep_trajectory.points
+    assert len(points) == 3
+    assert list(result.q_sweep_trajectory.joint_names) == list(JOINT_NAMES)
+    assert np.allclose(points[2].positions, SAFE_START + 0.02)
+    assert points[2].time_from_start.sec == 2 and not any(points[2].velocities)
+    assert result.selected_roll == pytest.approx(0.3)
+    assert result.cost == pytest.approx(1.5)
+
+
+# PATH_P 成功却没有 continuation: 不得发出空 Q 缓存的成功结果。
+def test_p_success_without_continuation_is_failure(node_factory, station, monkeypatch):
+    node = node_factory()
+    monkeypatch.setattr(node.type3_planner, "plan", lambda *args, **kwargs: _fake_plan(None))
+    monkeypatch.setattr(node_module, "_checked_trajectory", lambda *args, **kwargs: "peaks")
+    result = AssemblyResult()
+    success, message = node._plan_assembly(_p_request(station), result)
+    assert not success
+    assert result.error_code == node_module.ERROR_PLANNER_FAILED
+    assert len(result.q_sweep_s) == 0
