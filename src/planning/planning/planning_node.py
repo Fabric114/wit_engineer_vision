@@ -9,7 +9,7 @@
     接近段 type2: 对请求里的 target_pose 求 IK, 在候选解里挑"离起始关节角最省力"的一组,
         再用 OMPL BIT* 在关节空间搜一条不越限、不碰撞的稀疏路径 (planning/type2.py);
         没装 OMPL 时节点起不来, 不退化成直线。
-        碰撞场景按请求里的 station_pose 摆 (站体 + 局部桩体), 起点碰撞直接拒绝。
+        碰撞场景按请求里的 station_pose_arm_base 摆 (站体 + 局部桩体), 起点碰撞直接拒绝。
     装配段 type3: 把 AssemblyState 目标铺成流形上的一串状态, 按 roll 离散建分层图,
         Viterbi 选一串连续关节路点, 必要时走 best_ik 尽力修复 (planning/type3.py)。
 
@@ -34,13 +34,13 @@ from __future__ import annotations
 
 # 标准库 / 第三方 / ROS 消息依赖
 import time
-from collections.abc import Sequence
 
 import numpy as np
 import rclpy
 from builtin_interfaces.msg import Duration
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PoseStamped
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory as JointTrajectoryMsg
 from trajectory_msgs.msg import JointTrajectoryPoint
 
@@ -51,7 +51,6 @@ from interfaces.msg import (
     AssemblyRequest,
     AssemblyResult,
 )
-from interfaces.msg import AssemblyState as AssemblyStateMsg
 
 # planning 纯算法库 (与 ROS 无关): 臂模型、type3 规划器、时间参数化、轨迹校验
 from planning import (
@@ -132,14 +131,30 @@ def _transform_from_pose(pose: Pose) -> np.ndarray:
 
 
 # 把消息里的关节角数组转成 (6,) 向量并校验维度与有限性 (单位 rad)
-def _joint_array(values: Sequence[float]) -> np.ndarray:
-    """float32[6] -> (6,) float64 关节角向量。"""
-    joints = np.asarray(values, dtype=float).reshape(-1)
-    if joints.shape != (len(JOINT_NAMES),):
-        raise ValueError(f"关节角必须是 {len(JOINT_NAMES)} 维, 收到 {joints.shape}")
+def _joint_positions_from_joint_state(msg: JointState) -> np.ndarray:
+    """JointState -> (6,) float64 关节角, 按名字取 J1..J6 (同 RM2026 ros_utils); 多余关节忽略。"""
+    by_name = {name: index for index, name in enumerate(msg.name)}
+    missing = [name for name in JOINT_NAMES if name not in by_name]
+    if missing:
+        raise ValueError(f"initial_joint_state 缺关节 {missing} (收到 name={list(msg.name)})")
+    if len(msg.position) != len(msg.name):
+        raise ValueError(
+            f"initial_joint_state 的 position 长度 {len(msg.position)} 与 name 长度 {len(msg.name)} 不一致"
+        )
+    joints = np.asarray([msg.position[by_name[name]] for name in JOINT_NAMES], dtype=float)
     if not np.all(np.isfinite(joints)):
-        raise ValueError("关节角含非有限值")
+        raise ValueError(f"initial_joint_state 含非有限值: {joints.tolist()}")
     return joints
+
+
+# PoseStamped -> 4x4; frame_id 必须是 arm_base (含空串都拒绝), 不再告警后照常解释
+def _transform_from_pose_stamped(msg: PoseStamped, label: str) -> np.ndarray:
+    """站姿 PoseStamped -> 4x4 齐次变换 (arm_base 系)。"""
+    if msg.header.frame_id != FRAME_ARM_BASE:
+        raise ValueError(
+            f"{label}.header.frame_id 必须是 {FRAME_ARM_BASE!r}, 收到 {msg.header.frame_id!r}"
+        )
+    return _transform_from_pose(msg.pose)
 
 
 # 浮点秒拆成 sec + nanosec; 四舍五入可能让 nanosec 进位到 1e9, 需手动进位
@@ -211,6 +226,17 @@ def _pose_summary(transform: np.ndarray) -> str:
     return f"pos={position} quat_wxyz={np.round(quaternion, 4).tolist()}"
 
 
+# P 段末端 continuation: 以 base (P 终点) 为中心, Q 从 0 分别转到 -90° / +90°, 每 step_deg 一点
+def _q_sweep_paths(base: AssemblyState, step_deg: float) -> tuple[AssemblyPath, AssemblyPath]:
+    """Q 缓存的两条分支 (minus, plus), 同 RM2026 _assembly_paths 的 p 段。"""
+    q = np.deg2rad(np.arange(0.0, 90.0 + 0.5 * step_deg, step_deg))
+    plus = np.repeat(base.as_array()[None, :], len(q), axis=0)
+    minus = plus.copy()
+    plus[:, 3] = q
+    minus[:, 3] = -q
+    return AssemblyPath(minus), AssemblyPath(plus)
+
+
 # 日志用: 汇总 type3 分层图每层有效节点数的分布
 def _step_counts_summary(counts) -> str:
     """分层图每层有效节点数的紧凑摘要 (min/median/max)。"""
@@ -249,6 +275,8 @@ class PlanningNode(Node):
         self.approach_bit_timeout_s = self._declare_float(
             "approach.bit_timeout_s", approach_cfg["bit_timeout_s"]
         )
+        # 接近段目标: 沿站轴退开 insert_slide_mag 的待插状态 (= 装配手动插入的起点)
+        self.approach_axial_m = float(geometry_cfg["insert_slide_mag"])
         # 装配段: 轨迹总时长 (s)、稠密采样步长 (s)
         self.assembly_duration_s = self._declare_float(
             "assembly.duration_s", trajectory_cfg["duration_s"]
@@ -259,14 +287,8 @@ class PlanningNode(Node):
         # 流形上插值多少个状态: 直接决定 type3 建图的 IK 次数 (samples × roll 数)
         self.declare_parameter("assembly.path_samples", 10)
         self.assembly_path_samples = max(2, int(self.get_parameter("assembly.path_samples").value))
-        # 装配段的起点状态: 默认取几何里的插入行程, 即"沿站轴退开 insert_slide_mag 的待插位姿"
-        # —— 正好是接近段 target_pose 该给的那个点, 两段因此能首尾相接。
-        self.assembly_start_axial_m = self._declare_float(
-            "assembly.start_axial_m", geometry_cfg["insert_slide_mag"]
-        )
-        # goal.release=true 时给流形的释放位移 (m); 默认 0 表示几何上不动,
-        # 真正的吸盘/夹爪动作由执行侧 (gripper/arm_host) 负责。
-        self.assembly_release_m = self._declare_float("assembly.release_m", 0.0)
+        # 滑动段行程 (m): PATH_SLIDE 的终点、PATH_P 的起点
+        self.assembly_slide_m = float(geometry_cfg["slide_z_mag"])
         # type3 分层图按 roll 离散的步长 (deg), 决定 roll 层数
         self.assembly_roll_step_deg = self._declare_float(
             "assembly.roll_step_deg", joint_path_cfg["roll_sample_step_deg"]
@@ -308,6 +330,8 @@ class PlanningNode(Node):
             best_effort=dict(stage_path_cfg.get("best_ik", {})),
             start_joint_tolerance_rad=joint_path_cfg.get("start_joint_tolerance_rad"),
             max_joint_step_rad=joint_path_cfg.get("max_joint_step_rad"),
+            # P 段末端 Q 分支 (Q 缓存) 的采样步长与代价权重
+            continuation=dict(joint_path_cfg["q_sweep"]),
         )
         # 两段各一个定时长五次多项式参数化器
         self.approach_parameterizer = FixedDurationParameterizer(self.approach_duration_s)
@@ -352,7 +376,7 @@ class PlanningNode(Node):
             f"type3_ik_branch={ik_branches[0]} "
             f"roll_count={len(self.type3_planner.rolls)} "
             f"assembly_path_samples={self.assembly_path_samples} "
-            f"assembly_start_axial_m={self.assembly_start_axial_m:.4f} "
+            f"assembly_slide_m={self.assembly_slide_m:.4f} "
             f"approach_ik_branches={list(self.approach_ik_branches)}"
         )
 
@@ -434,11 +458,12 @@ class PlanningNode(Node):
         result.error_code = ""
         started = time.perf_counter()
         try:
-            result.message = self._plan_approach(msg, result)
+            result.message, result.cost = self._plan_approach(msg, result)
             result.success = True
         except Exception as exc:  # 任何一步失败都回一条失败结果, 不让节点挂掉
             result.success = False
             result.message = f"{type(exc).__name__}: {exc}"
+            result.cost = float("inf")
             result.error_code = _classify_exception(exc)
             result.trajectory = JointTrajectoryMsg()
             self.get_logger().warning(
@@ -456,34 +481,37 @@ class PlanningNode(Node):
             )
         self.approach_result_pub.publish(result)
 
-    # 流程: 输入校验 -> 碰撞场景 -> IK 选终点 -> BIT* 路径 -> 参数化 -> 校验 -> 填消息
-    def _plan_approach(self, msg: ApproachRequest, result: ApproachResult) -> str:
-        """规划接近段并填好 result.trajectory, 返回给 result.message 的说明。"""
-        # 输入校验与预处理: 起始关节角折进采样盒, 目标位姿转 4x4; 请求 timeout<=0 时用参数默认超时
+    # 流程: 输入校验 -> 碰撞场景 -> 扫 roll 选终点 -> BIT* 路径 -> 参数化 -> 校验 -> 填消息
+    def _plan_approach(self, msg: ApproachRequest, result: ApproachResult) -> tuple[str, float]:
+        """规划接近段并填好 result.trajectory, 返回 (result.message 的说明, 终点运动代价)。"""
+        # 输入校验与预处理: 起始关节角折进采样盒, 站位姿转 4x4
         self._check_frame(msg.header.frame_id, "ApproachRequest.header")
-        start_joint = self._to_type2_bounds(_joint_array(msg.start_joint))[0]
-        target = _transform_from_pose(msg.target_pose)
-        timeout_s = float(msg.timeout) if float(msg.timeout) > 0.0 else self.approach_bit_timeout_s
+        start_joint = self._to_type2_bounds(
+            _joint_positions_from_joint_state(msg.initial_joint_state)
+        )[0]
+        station = _transform_from_pose_stamped(
+            msg.station_pose_arm_base, "ApproachRequest.station_pose_arm_base"
+        )
         self.get_logger().info(
             "接近段请求 "
             f"start_joint={np.round(start_joint, 4).tolist()} "
-            f"target_{_pose_summary(target)} "
-            f"timeout_s={timeout_s:.3f}"
+            f"station_{_pose_summary(station)} "
+            f"axial_m={self.approach_axial_m:.4f} "
+            f"timeout_s={self.approach_bit_timeout_s:.3f}"
         )
 
-        # station_pose 必填, 按站位姿建检查器 (含局部桩体), 并先验起点不碰撞
-        if msg.station_pose == Pose():
-            # 默认 Pose 是 arm_base 原点 + 单位姿态, 物理上不可能是站位, 视为没填
-            raise ValueError("ApproachRequest.station_pose 必填 (收到默认 Pose)")
-        station = _transform_from_pose(msg.station_pose)
+        # 按站位姿建检查器 (含局部桩体), 并先验起点不碰撞
         collision_checker = self._make_collision_checker(station, stage="approach")
         if bool(collision_checker.check_configs(start_joint[None, :])[0]):
             raise RuntimeError("接近段起点 start_joint 已与兑换站碰撞")
-        # 在 IK 候选里选终点关节角 (有效 + 无碰撞 + 运动代价最小)
-        goal_joint, goal_cost = self._select_approach_goal(target, start_joint, collision_checker)
+        # 在待插位 × type3 roll 网格的 IK 候选里选终点关节角 (有效 + 无碰撞 + 运动代价最小)
+        goal_joint, goal_cost, goal_roll = self._select_approach_goal(
+            station, start_joint, collision_checker
+        )
         self.get_logger().info(
             "接近段目标关节角 "
-            f"goal_joint={np.round(goal_joint, 4).tolist()} motion_cost={goal_cost:.6f}"
+            f"goal_joint={np.round(goal_joint, 4).tolist()} motion_cost={goal_cost:.6f} "
+            f"goal_roll_deg={np.rad2deg(goal_roll):.1f}"
         )
 
         # BIT* 的状态合法性回调: 单个构型查碰撞
@@ -501,7 +529,7 @@ class PlanningNode(Node):
             validity_fn=validity_fn,
             joint_lower=self.joint_lower,
             joint_upper=self.joint_upper,
-            timeout_s=timeout_s,
+            timeout_s=self.approach_bit_timeout_s,
         )
 
         # 稀疏路径 -> 定时长稠密轨迹, 校验通过后转成消息填入 result
@@ -518,33 +546,46 @@ class PlanningNode(Node):
             f"sample_dt={self.approach_sample_dt:.4f}"
         )
         # message = 规划说明 + 峰值摘要
-        return f"ok {peaks}"
+        return f"ok {peaks}", goal_cost
 
     def _select_approach_goal(
         self,
-        target: np.ndarray,
+        station: np.ndarray,
         start_joint: np.ndarray,
         collision_checker,
-    ) -> tuple[np.ndarray, float]:
-        """对 target_pose 求 IK, 在有效且无碰撞的候选里挑运动代价最小的一组关节角。"""
-        # 批量 IK: 输入 (1, 4, 4), 输出 joints (1, n_branches, 6) / valid (1, n_branches); 取有效解
-        joints, valid = self.arm.solve_ik(target[None, :, :], branches=self.approach_ik_branches)
-        candidates = joints[0][valid[0]]
-        if not len(candidates):
+    ) -> tuple[np.ndarray, float, float]:
+        """待插位绕插入轴扫 roll 求 IK, 在有效且无碰撞的候选里挑运动代价最小的一组。
+
+        返回 (终点关节角 (6,), 运动代价, roll [rad])。 流程同 RM2026 _select_approach_goal, 但 roll 用
+        type3 的网格 (assembly.roll_step_deg, 默认 5°) 而不是 1°: 操作手在这个 roll 上直插到底后, 装配段
+        首层必须有同 roll 的节点, 否则起点差超 start_joint_tolerance_rad 被拒。
+        不检查同一 roll 下"插到底"是否可解 (见 todo.md §3)。
+        """
+        rolls = np.asarray(self.type3_planner.rolls, dtype=float)
+        approach_state = AssemblyState(axial_offset_m=self.approach_axial_m)
+        targets = self.type3_planner.task_poses(
+            AssemblyPath(approach_state.as_array()[None, :]), station, rolls
+        )
+        # 批量 IK: joints (R, n_branches, 6) / valid (R, n_branches); 展平后下标 // n_branches = roll 下标
+        joints, valid = self.arm.solve_ik(targets, branches=self.approach_ik_branches)
+        flat_index = np.flatnonzero(valid.reshape(-1))
+        if not len(flat_index):
             raise RuntimeError(
-                f"target_pose 在 IK 分支 {list(self.approach_ik_branches)} 上无解 "
-                f"(ik_type={self.arm.ik_type}; 默认与装配段同分支), 该位姿可能超出工作空间或姿态不可达"
+                f"接近段在 IK 分支 {list(self.approach_ik_branches)} 上 {len(rolls)} 个 roll 均无解 "
+                f"(ik_type={self.arm.ik_type}; 待插位 axial={self.approach_axial_m:.3f} m), 站姿可能超出工作空间"
             )
         # 候选折进采样盒 (超限会抛错), 再剔除碰撞解
-        candidates = self._to_type2_bounds(candidates)
+        candidates = self._to_type2_bounds(joints.reshape(-1, 6)[flat_index])
         free = ~collision_checker.check_configs(candidates)
         if not np.any(free):
-            raise RuntimeError("target_pose 的所有 IK 解都与兑换站碰撞")
+            raise RuntimeError("接近段所有 IK 候选都与兑换站碰撞")
         candidates = candidates[free]
+        flat_index = flat_index[free]
         # 按相对起始关节角的运动代价挑最省力的一组
         costs = self._motion_cost(candidates, start_joint)
         best = int(np.argmin(costs))
-        return candidates[best], float(costs[best])
+        roll = float(rolls[int(flat_index[best]) // valid.shape[1]])
+        return candidates[best], float(costs[best]), roll
 
     # ------------------------------------------------------------------ 装配段
     # 装配段回调: 规划失败分两类 (plan.success=False 返回 / 抛异常), 都发布结果
@@ -555,6 +596,9 @@ class PlanningNode(Node):
         result.request_id = msg.request_id
         result.repaired_nodes = 0
         result.error_code = ""
+        result.path_name = msg.path_name
+        result.cost = float("inf")
+        result.selected_ik_branch = -1
         started = time.perf_counter()
         try:
             success, message = self._plan_assembly(msg, result)
@@ -568,47 +612,39 @@ class PlanningNode(Node):
         # 统一写 success/message, 按成败选日志级别, 最后发布
         result.success = success
         result.message = message
-        level = self.get_logger().info if success else self.get_logger().warning
-        level(
+        # 成败分两处调用: rclpy 按调用点缓存日志级别, 同一调用点换级别会抛 ValueError
+        summary = (
             f"装配段规划{'成功' if success else '失败'} "
             f"id={msg.request_id} "
+            f"path_name={int(msg.path_name)} "
             f"error_code={result.error_code} "
             f"repaired_nodes={result.repaired_nodes} "
             f"dense_steps={len(result.trajectory.points)} "
             f"elapsed_s={time.perf_counter() - started:.3f} "
             f"message={message}"
         )
+        if success:
+            self.get_logger().info(summary)
+        else:
+            self.get_logger().warning(summary)
         self.assembly_result_pub.publish(result)
 
     # 流程: 输入校验 -> 构造流形路径 -> type3 建图规划 -> 参数化 -> 校验 -> 填消息
     def _plan_assembly(self, msg: AssemblyRequest, result: AssemblyResult) -> tuple[bool, str]:
         """在装配流形上规划, 填好 result.trajectory, 返回 (是否成功, 说明)。"""
         self._check_frame(msg.header.frame_id, "AssemblyRequest.header")
-        # 输入解析: 起始关节角 (6,)、站位姿 4x4 (arm_base 系)、目标流形状态
-        start_joint = _joint_array(msg.start_joint)
-        if msg.station_pose == Pose():
-            # 与接近段一致: 默认 Pose 是 arm_base 原点 + 单位姿态, 物理上不可能是站位, 视为没填
-            raise ValueError("AssemblyRequest.station_pose 必填 (收到默认 Pose)")
-        station = _transform_from_pose(msg.station_pose)
-        goal_state = self._assembly_state(msg.goal)
-        # 起点: use_start=false 取"沿站轴退开 start_axial_m 的待插状态", 与接近段的落点衔接;
-        # use_start=true 取请求给的 start (如"已插到底"再接滑动段)。
-        # 终点由请求给定, 中间线性铺开 path_samples 个状态交给 type3 建图。
-        start_state = (
-            self._assembly_state(msg.start)
-            if bool(msg.use_start)
-            else AssemblyState(axial_offset_m=self.assembly_start_axial_m)
+        # 输入解析: 起始关节角 (6,)、站位姿 4x4 (arm_base 系)、按 path_name 取固定路径
+        start_joint = _joint_positions_from_joint_state(msg.initial_joint_state)
+        station = _transform_from_pose_stamped(
+            msg.station_pose_arm_base, "AssemblyRequest.station_pose_arm_base"
         )
-        path = AssemblyPath.between(start_state, goal_state, samples=self.assembly_path_samples)
-        # 请求摘要日志: 角度类状态转 deg 显示
+        path, continuations = self._assembly_paths(int(msg.path_name))
         self.get_logger().info(
             "装配段请求 "
+            f"path_name={int(msg.path_name)} "
             f"start_joint={np.round(start_joint, 4).tolist()} "
             f"station_{_pose_summary(station)} "
-            f"goal=(axial={goal_state.axial_offset_m:.4f} slide={goal_state.slide_m:.4f} "
-            f"p={np.rad2deg(goal_state.p_angle_rad):.2f}deg "
-            f"q={np.rad2deg(goal_state.q_angle_rad):.2f}deg "
-            f"release={goal_state.release_m:.4f}) "
+            f"continuations={len(continuations)} "
             f"path_samples={self.assembly_path_samples} "
             f"roll_count={len(self.type3_planner.rolls)}"
         )
@@ -621,6 +657,7 @@ class PlanningNode(Node):
             station,
             initial_joints=start_joint,
             collision_checker=collision_checker,
+            terminal_continuations=continuations,
         )
         # 先打诊断再判成败, 失败时日志里能看出是 IK 不可达还是碰撞挡住
         self._log_assembly_diagnostics(plan)
@@ -652,25 +689,66 @@ class PlanningNode(Node):
             f"dense_steps={int(trajectory.positions.shape[0])} "
             f"cost={float(plan.cost):.6f} "
             f"repaired_nodes={result.repaired_nodes} "
+            f"q_sweep_points={len(plan.continuation['states']) if plan.continuation else 0} "
             f"roll_deg={np.round(np.rad2deg(plan.rolls), 2).tolist()}"
         )
+        if continuations:
+            if plan.continuation is None:
+                # type3 在要求 continuation 时本应判失败; 这里兜底, 不发空 Q 缓存的成功结果
+                result.error_code = ERROR_PLANNER_FAILED
+                result.trajectory = JointTrajectoryMsg()
+                return False, "P 段缺 Q 缓存 (type3 未返回 continuation)"
+            self._fill_q_sweep_result(result, plan.continuation)
         result.error_code = ""
+        result.cost = float(plan.cost)
+        result.selected_roll = float(plan.rolls[-1])
+        result.selected_ik_branch = int(self.type3_planner.ik_branch)
         return True, f"{plan.message} {peaks}"
 
-    def _assembly_state(self, goal: AssemblyStateMsg) -> AssemblyState:
-        """interfaces/AssemblyState -> planning 的流形状态。
+    def _assembly_paths(self, path_name: int) -> tuple[AssemblyPath, tuple[AssemblyPath, ...]]:
+        """path_name -> (装配流形路径, 末端 continuation), 同 RM2026 _assembly_paths。
 
-        msg 里 release 是布尔 (吸盘要不要松), 流形几何要的是"释放位移";
-        用 ROS 参数 assembly.release_m 给这个位移, 默认 0 = 几何上不额外让开。
+        PATH_SLIDE: 插到底 -> slide_z_mag, 无 continuation;
+        PATH_P: 滑动终点 -> p=90°, continuation = Q 0->-90° / 0->+90° 两条分支; type3 只留
+        两条都走得通的 P 终点, 合并结果就是 Q 缓存。
         """
-        # 单位: axial/slide/release 为 m, p/q 角为 rad (直接沿用消息字段, 未做换算)
-        return AssemblyState(
-            axial_offset_m=float(goal.axial),
-            slide_m=float(goal.slide),
-            p_angle_rad=float(goal.p_angle),
-            q_angle_rad=float(goal.q_angle),
-            release_m=self.assembly_release_m if bool(goal.release) else 0.0,
+        inserted = AssemblyState()
+        slid = AssemblyState(slide_m=self.assembly_slide_m)
+        if path_name == AssemblyRequest.PATH_SLIDE:
+            return AssemblyPath.between(inserted, slid, samples=self.assembly_path_samples), ()
+        if path_name == AssemblyRequest.PATH_P:
+            p_done = AssemblyState(slide_m=self.assembly_slide_m, p_angle_rad=0.5 * np.pi)
+            step_deg = float(self.type3_planner.continuation_config["sample_step_deg"])
+            return (
+                AssemblyPath.between(slid, p_done, samples=self.assembly_path_samples),
+                _q_sweep_paths(p_done, step_deg),
+            )
+        raise ValueError(
+            f"未知 path_name={path_name} (只支持 PATH_SLIDE={AssemblyRequest.PATH_SLIDE} / "
+            f"PATH_P={AssemblyRequest.PATH_P})"
         )
+
+    # Q 缓存 -> 消息: q_sweep_s = q / 90° (从 -1 递增到 +1), q_sweep_trajectory 是查找表
+    def _fill_q_sweep_result(self, result: AssemblyResult, continuation: dict) -> None:
+        """把 type3 合并的 continuation 写进结果 (同 RM2026 _fill_q_sweep_result)。
+
+        q_sweep_trajectory 第 i 点 = q_sweep_s[i] 处的关节角, time_from_start = i 秒、速度/加速度 0;
+        不是可播放轨迹, 执行侧按 s 逐关节插值。
+        """
+        states = np.asarray(continuation["states"], dtype=float)
+        joints = np.asarray(continuation["joints"], dtype=float)
+        result.q_sweep_s = [float(v) for v in states[:, 3] / (0.5 * np.pi)]
+        sweep = JointTrajectoryMsg()
+        sweep.header = result.header
+        sweep.joint_names = list(JOINT_NAMES)
+        for index, position in enumerate(joints):
+            point = JointTrajectoryPoint()
+            point.positions = [float(v) for v in position]
+            point.velocities = [0.0] * len(JOINT_NAMES)
+            point.accelerations = [0.0] * len(JOINT_NAMES)
+            point.time_from_start = _seconds_to_duration(float(index))
+            sweep.points.append(point)
+        result.q_sweep_trajectory = sweep
 
     def _log_assembly_diagnostics(self, plan) -> None:
         """打印分层图/尽力修复的诊断, 失败时据此判断是 IK 不可达还是碰撞挡住。"""

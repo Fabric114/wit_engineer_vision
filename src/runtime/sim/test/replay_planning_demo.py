@@ -2,10 +2,10 @@
 """粗接 planning 的演示脚本: 仿真真值站姿 -> 规划 -> 回放到 sim, 看 MuJoCo 画面.
 
 流程 (设计文档 §九):
-    1. 等 /mcu/arm/state            -> start_joint
+    1. 等 /mcu/arm/state            -> initial_joint_state
     2. 等 /vision/exchange_pose     -> 站姿 (frame_id=arm_base, 正是 planning 要的系)
-    3. 站姿沿自身 +x (插入轴, 与 planning 的站体约定一致) 退 retract 米作为待插
-       TCP 位姿, 发 ApproachRequest
+    3. 发 ApproachRequest (起始关节 JointState + 站姿 PoseStamped); 待插目标由 planning_node
+       按站姿自选 (沿站轴退开 insert_slide_mag, 扫 roll, 同 RM2026)
     4. 收到 /plan/approach/result 后, 按 time_from_start 以 100 Hz 采样,
        逐点发 /host/arm/command (control_mode=1)
     5. 打印跟踪误差
@@ -30,8 +30,13 @@ import numpy as np
 import rclpy
 from interfaces.msg import (ApproachRequest, ApproachResult, ArmHostCommand,
                             ArmMcuState, ExchangeStationPose)
+from geometry_msgs.msg import PoseStamped
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
+
+#: planning_node 按名字取的 6 个臂关节
+JOINT_NAMES = ("J1", "J2", "J3", "J4", "J5", "J6")
 
 def quat_to_mat(w: float, x: float, y: float, z: float) -> np.ndarray:
     n = np.sqrt(w * w + x * x + y * y + z * z)
@@ -76,6 +81,24 @@ def mat_to_pose(T: np.ndarray, pose) -> None:
     pose.orientation.y, pose.orientation.z = float(q[2]), float(q[3])
 
 
+def joint_state_msg(q: np.ndarray, stamp) -> JointState:
+    """关节角 -> 规划请求的 initial_joint_state (名字 J1..J6, stamp = 关节角采样时刻)。"""
+    msg = JointState()
+    msg.header.stamp = stamp
+    msg.name = list(JOINT_NAMES)
+    msg.position = [float(v) for v in q]
+    return msg
+
+
+def station_pose_msg(T: np.ndarray, stamp) -> PoseStamped:
+    """站姿 4x4 -> 规划请求的 station_pose_arm_base (frame_id = arm_base)。"""
+    msg = PoseStamped()
+    msg.header.stamp = stamp
+    msg.header.frame_id = "arm_base"
+    mat_to_pose(T, msg.pose)
+    return msg
+
+
 class DemoNode(Node):
     def __init__(self) -> None:
         super().__init__("replay_planning_demo")
@@ -114,6 +137,11 @@ class DemoNode(Node):
     @property
     def joints(self) -> np.ndarray:
         return np.asarray(self._state.joint_pos, dtype=float)
+
+    @property
+    def joints_msg(self) -> JointState:
+        """当前关节角的 JointState (stamp 取 ArmMcuState 的采样时间)。"""
+        return joint_state_msg(self.joints, self._state.header.stamp)
 
     @property
     def station(self) -> ExchangeStationPose:
@@ -189,8 +217,6 @@ def replay(node: DemoNode, traj, rate_hz: float) -> float:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="sim + planning 粗接演示")
-    ap.add_argument("--retract", type=float, default=0.25,
-                    help="待插位姿: 沿站体 +x (插入轴) 退多少米")
     ap.add_argument("--rate", type=float, default=100.0, help="回放频率 Hz")
     ap.add_argument("--plan-timeout", type=float, default=60.0, help="等规划结果秒数")
     args = ap.parse_args()
@@ -211,25 +237,15 @@ def main() -> int:
                       "检查 config/sim.yaml 的 station.publish_pose")
             return 1
 
-        start = node.joints
         T_station = pose_to_mat(node.station.pose)
-        # sim 的站姿就是"插到底"时的 TCP 位姿 (见 sim_node._station_from_joint),
-        # 沿站体 +x 退出去就是待插位姿, 直接当 ApproachRequest.target_pose (TCP)。
-        retract = np.eye(4)
-        retract[0, 3] = args.retract
-        T_target = T_station @ retract
-
-        log.info(f"起始关节 {np.round(start, 3).tolist()}")
-        log.info(f"站姿 (arm_base) {np.round(T_station[:3, 3], 4).tolist()}, "
-                 f"待插 TCP {np.round(T_target[:3, 3], 4).tolist()}")
+        log.info(f"起始关节 {np.round(node.joints, 3).tolist()}")
+        log.info(f"站姿 (arm_base) {np.round(T_station[:3, 3], 4).tolist()} (待插目标由 planning_node 自选)")
 
         req = ApproachRequest()
         req.header.stamp = node.get_clock().now().to_msg()
         req.header.frame_id = "arm_base"
-        req.start_joint = np.asarray(start, dtype=np.float32).tolist()
-        mat_to_pose(T_target, req.target_pose)
-        mat_to_pose(T_station, req.station_pose)  # 碰撞场景按真实站位摆放
-        req.timeout = float(args.plan_timeout)
+        req.initial_joint_state = node.joints_msg
+        req.station_pose_arm_base = station_pose_msg(T_station, node.station.header.stamp)
         req.request_id = uuid.uuid4().hex
         node.pending_request_id = req.request_id
         node.req_pub.publish(req)
