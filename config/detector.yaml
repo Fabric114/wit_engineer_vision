@@ -5,15 +5,15 @@ type: tc
 
 # ---- 输入源: 共享内存 ----
 input:
-  source: shm                 # shm | topic
-  region: ""                  # 空 = 用 shm/config/shm.yaml 的默认区域
+  source: shm                 
+  region: ""                  
   poll_hz: 200.0              # 轮询共享内存的频率 (Hz)
   frame_id: "camera"
-  image_topic: "/camera/image_raw"   # source=topic 时订阅
+  image_topic: "/camera/image_raw"   
 
 # ---- 可视化与输出 ----
-debug: true                    # 打印每帧检测数与耗时
-show_image: true               # 本地 cv2.imshow 调试窗口 (无显示环境设为 false)
+debug: true                    
+show_image: true               
 publish_annotated: true        # 发布标注图 sensor_msgs/Image
 annotated_topic: "/detector/annotated"
 observation_topic: "/detector/keypoints"   # tc: 出 interfaces/KeypointObservation

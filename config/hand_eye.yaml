@@ -11,6 +11,7 @@ method: "B"
 base_from_board:
   xyz_m: [0.0, 0.0, 0.0]      # TODO
   rpy_deg: [0.0, 0.0, 0.0]    # TODO
+base_from_board_confirmed: false   # 方法 A 实测并核对后设为 true
 
 # 方法 B: 采集参数
 poses_required: 12

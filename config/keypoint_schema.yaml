@@ -1,35 +1,4 @@
-# 数据驱动关键点 schema: 名字 -> 3D 模型点。新目标 = 新增条目, 不改代码。
-#
-# 条目名 = detector.yaml 里 tc.schema; 点的顺序必须与 tc.keypoint_names 完全一致
-# (KeypointObservation 只带平行数组, 不带点名, solver 按这里的顺序配对)。
-# 权重路径不在这里 —— 那是 config/detector.yaml 的事, 一处一个真值。
-#
-# 来源: ~/RM2026-Engineer-Assembly-Algorithm
-#   runtime/core/arm_exchange_core/system_config.example.yaml -> keypoint_schemas.exchange_12pt
-# 已核对与其 Blender 渲染配置 src/blender/configs/example.yaml (训练标注所用几何) 一致:
-#   X = z_blender - 0.112, Y = x_blender, Z = y_blender。
-# 这是仿真/渲染模型几何; 2026-10-20 用户确认站体与实物一致 (未逐点测量图纸)。
-#
-# 单位: 米。坐标系 station (沿用 RM2026 exchange_12pt, 与 sim 的 exchange_station/E 系同一个):
-#   原点 = ring 点 = 矿石插到底时的 TCP;
-#   +X = 退出方向 (指向机器人, 预插位在 +X 一侧), 插入沿 -X;
-#   兑换面 (light_*/shell_*) 位于 X < 0 一侧; Y、Z 在面内 (Y 对应 Blender x, Z 对应 Blender y)。
-#
-# 2026-10-20 实测: 按 exchange_station.xml 的 geom quat 把 OBJ 顶点换到 E 系后,
-# ring 网格面中心 = (0.0018, 0, 0), 站体前表面 X = -0.11; 本文件 ring=0、shell/light X=-0.112,
-# 与网格一致 (ring + shell/light 8 点, 2 mm 内, 沿 X 的系统偏移)。 结论: station_model 与 station_assembly 是同一个系,
-# T_station_model_station_assembly = 单位阵; 早期文档里的"固定变换待核对"不成立。
-# 注意: 12 点与 sim 网格同出一份 Blender 模型, 这只证明 CAD 自洽; 实物站体仍要复测。
-# 换站体模型 / 重新导出网格 / 改 keypoint 坐标后要重新量这条
-# (推导与量法见 docs/2026-10-20-workspace-audit.md §4)。
-#
-# tc (yolo-pose, kpt_shape [12, 3]) 对每个实例都输出 12 槽, 训练标签为
-# (RM2026 src/blender/pipeline/compose_dataset.py):
-#   class 0 pillar:   [5 个 pillar 点 | 7 个 padding]
-#   class 1 exchange: [5 个 padding   | 7 个 exchange 点]
-# parts 声明每个 class_id 负责的槽位; solver/pairing.py 把同一帧的 pillar + exchange
-# 实例拼成 12 点后一次 PnP (等价于 RM2026 的 exchange_12pt), 只看到一类时用该类的点降级求解。
-
+# 12关键点在E下的位置
 exchange_station:
   parts:
     pillar:   {class_id: 0, keypoints: [TL, TR, BL, BR, ring]}
@@ -48,4 +17,3 @@ exchange_station:
     light_TL: [-0.112000, -0.114870,  0.167312]
     light_BL: [-0.112000, -0.114870,  0.035953]
 
-# 发射机构（会有吗） :

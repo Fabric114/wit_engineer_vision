@@ -3,13 +3,6 @@ arm:
   ik_type: rm26_arm
 
   dh:
-    # 标准 Craig 改进 DH: T_i = Rotx(α_{i-1})·Transx(a_{i-1})·Rotz(θ_i)·Transz(d_i), i=1..6。
-    # 数组下标 0..5 依次是 α_0..α_5 / a_0..a_5; 第 i 行 (i=1..6) 取 [i-1]。
-    # 这与旧写法 T_i = Rotx(α_i)·... 数值完全等价, 只是表头下标从 i 改成 i-1;
-    # 不要把数组整体移位 —— 移位会改变 FK。
-    # base(arm_base) 取在 J1 转轴上, z 朝上, x 朝车头 (base_link +x), J1 零位朝向由 theta_offset[0] 吸收;
-    # 关节符号与 URDF/MJCF 一致。 数值由 src/planning/tools/print_config.py 从 URDF 生成,
-    # test_urdf_consistency.py 守着 (alpha 例外: 保持理想值, 容差 1e-5, 见该测试)。
     alpha:        [0.0, -3.141592653589793, 1.5707963267948966, 1.5707963267948966, 1.5707963267948966, 1.5707963267948966]
     a:            [0.0, 0.191004, 0.0, 0.0, 0.0, 0.0]
     d:            [0.0, -0.0545, 0.1455, 0.0005, 0.1235, 0.043]
@@ -71,8 +64,7 @@ collision:
       - asset: exchange_column_collision.obj
     assembly_allowed_contact: [cc_link6, cc_ore]
 
-  # 车体,老车暂时不含自碰撞。 arm_base_T_mesh = 各 link 在 arm_base (x 朝车头) 下的位姿, q = 0、line = 0,
-  # 由 src/planning/tools/print_config.py 从 URDF 生成, test_urdf_consistency.py 按 asset 名比对。
+  # 车体,26老车暂时不含自碰撞
   robot_body:
     asset_dir: src/runtime/sim/model/rm26_engineer_description/meshes
     meshes:
@@ -91,44 +83,12 @@ collision:
         arm_base_T_mesh: [0.0, 0.0, -1.0, -0.346, 1.0, 0.0, 0.0, -0.286, 0.0, -1.0, 0.0, -0.243, 0.0, 0.0, 0.0, 1.0]
       - asset: wheel_link_4.obj
         arm_base_T_mesh: [0.0, 0.0, -1.0, -0.346, 1.0, 0.0, 0.0, 0.074, 0.0, -1.0, 0.0, -0.243, 0.0, 0.0, 0.0, 1.0]
-
-  # 地面: 顶面在 arm_base 系 z = z_m 的实心薄盒。 sim 里底盘焊在 world, 地面 world z = 0 ->
-  # arm_base 系 z = -0.4781 (line = 0)。 真车要按实测底盘离地高度改。
-  # 升降轴 line 的高度 (m, 0 = 最低, 0.38 = 升到顶)。 上面 robot_body / ground 按 line = 0 写,
-  # 实际用时底盘 / 轮子 / 地面在 arm_base 系里整体下移 line_m。 必须与 config/sim.yaml 的 arm.line_m 相同
-  # (test_collision_safety 守着)。 2026-10-17 定为 0.1 (升到顶够不到三级高度, 见 config/sim.yaml)。
   line_m: 0.1
 
   ground:
     z_m: -0.478106
 
   arm:
-    # src/planning/test/test_arm_capsules.py —— 它既是黄金检查 (pytest 里复验包围性),
-    # 也是生成器 (`PYTHONPATH=. python3 test/test_arm_capsules.py` 重新打印本段)。
-    #   1. 把 link_i 的 mesh 顶点换算到 DH 第 i 系 (胶囊坐标就写在这个系里):
-    #      link_i -> DH_i = inv(FK(q=0).link_transforms[i]) @ inv(F0) @ A0[i],
-    #      F0/A0 取自 test_dh_mujoco (只用 URDF 几何, 不读本文件)。 q 任取一组即可:
-    #      mesh 和胶囊刚性固连在同一个 DH 系上, 一起转。
-    #   2. 在 x/y/z/PCA 四个轴向各拟合一根最紧胶囊 (半径 = 到轴线最大垂距, 两端按球帽
-    #      能覆盖的程度收紧), 取半径最小的; 轴对齐若不比最优差过 1 mm 就优先用轴对齐。
-    #   3. 半径向上取整到毫米, 再用取整后的值复验包围 —— 余量 +0.24 ~ +0.91 mm, 保守。
-    #
-    # 为什么一根连杆只给一根胶囊: 胶囊是凸的, 所以"所有顶点都在胶囊内"就证明整个三角面
-    # 都在胶囊内 (只查顶点即可)。 拆成多根确实能瘦身 —— link_6 沿 z 切在 -40.3 mm 分两根,
-    # 半径从 61.0 降到 43.6 mm —— 但胶囊的并集不是凸的, 顶点论证随之失效: 实测那个切法
-    # 顶点检查照样全过 (最大外露 +0.00 mm), 按重心坐标在三角面上撒 23040 点却查出 168 个
-    # 漏点、最深 +2.31 mm, 位置正在切面上 (有实料横跨切面, 顶点分属两边各自被覆盖)。
-    # 所以真要拆, 必须把验证一起换成面采样, 且面采样只是概率保证。 详见
-    # docs/2026-09-26-collision-capsule-tutorial.md 第 6.2 节。
-    #
-    # 代价: 6 根 (原来 3 根) 胶囊 -> 每次碰撞检查的 hpp-fcl 调用翻倍。 嫌慢就砍 frame 1
-    # (它贴着 base 基本不会撞外物), 别砍中间几根。
-    #
-    # 夹爪: link_6.obj 本身含安装座+固定夹爪 (沿第 6 系 -y 伸出约 11 cm), cc_link6 已包住。
-    # 2026-10-17 换成 GC4_1014 导出的 60 mm 开口版 (两爪内侧在第 6 系 z = -0.013 / -0.073,
-    # 中心 -0.043 与 TCP 重合, 夹矿石中部 Ø60 段)。
-    # 缺口: 被夹持的矿石没有几何; 夹爪张开状态没建模。 要补就加 frame 6 的胶囊
-    # (名字里带 placeholder 的条目会被上面那个测试跳过)。
     capsules:
       - name: cc_link1
         frame: 1
@@ -159,9 +119,7 @@ collision:
         frame: 6
         from: [0.0017, -0.0925, -0.0423]
         to: [0.0017, -0.029, -0.0423]
-        radius: 0.061        # 轴向 y, 最紧 60.96 mm, 取整后余量 +0.04 mm (2026-10-17 按 60 mm 开口夹爪重拟合)
-      # 被夹持的矿石 (payload: 不属于某根连杆的网格, test_arm_capsules 单独对 MJCF 里的 energy_unit geom 验包围)。
-      # 位姿真值在 rm26_arm.xml 的 energy_unit geom; 改那里就要重拟合这根。 装配段对桩体豁免 (见上面 assembly_allowed_contact)。
+        radius: 0.061        # 轴向 y, 最紧 60.96 mm, 取整后余量 +0.04 mm 
       - name: cc_ore
         frame: 6
         payload: true
@@ -171,8 +129,6 @@ collision:
 
 planning:
   exchange:
-    # type3 建图只吃单分支。 编号按 arm.ik_type=rm26_arm 的闭式解 (见上), 与旧数值 IK 的
-    # 初值编号无关 (旧值 7 在闭式解下几乎不出真解)。
     ik_branches: [0]
     approach:
       duration_s: 2.0
@@ -223,10 +179,6 @@ planning:
         roll_free: true
         joint_reference_sigma_deg: 30.0
         max_nfev: 40
-        # 近似解的验收阈值 (硬门槛; 上面的 sigma 只是优化权重)。 超任一项则修复不算成功。
-        # 过渡值: 取 test_dh_mujoco 的模型一致性门槛 (位置 <1 mm / 姿态 <0.1°), 不是实测装配间隙;
-        # 拿到配合间隙与测量误差预算后按它核定。 删掉这两个键 = 近似解一律拒绝。
-        # 见 docs/audits/2026-10-09/planning-safety-fix-spec.md
         max_position_error_m: 0.001
         max_axis_error_deg: 0.1
       joint_path:
@@ -238,13 +190,7 @@ planning:
         motion_l2_weight: 0.5
         joint_limit_margin_rad: 0.25
         joint_limit_weight: 5.0
-        # type3 相邻路点允许的最大单轴关节变化 (rad), 硬门槛: 超了这条边在 Viterbi 里不可走,
-        # 修复后的路点也要再查一遍。 防的是 IK 分支内跨腕奇异 / 构型翻转 (sim 实测翻转一步 2.58 rad)。
-        # 过渡值: 正常插入每层 (约 1.7 cm) 实测 0.08~0.13 rad, 取约 3 倍余量; 换 path_samples 要跟着核。
         max_joint_step_rad: 0.4
-        # 装配请求的实测起点与流形首点允许的最大单轴差 (rad)。 阈值内在轨迹前插一段连接
-        # (有碰撞检查器时逐点查), 超出则判失败。 过渡值 (约 2.9°, 略大于 roll 采样半步),
-        # 没有实测依据, 需仿真/实机衔接测试后核定。
         start_joint_tolerance_rad: 0.05
         q_sweep:
           sample_step_deg: 5.0

@@ -26,8 +26,8 @@ circle_spacing_m: 0.020
 # --- 采样门槛 ---
 min_points: 20                # 单张至少检出多少点
 min_sharpness: 80.0           # Laplacian 方差, 过滤运动模糊
-min_coverage: 0.035           # 板子至少占画面这么大比例
-min_signature_distance: 0.05  # 视角指纹距离, 小于它算重复视角
+min_coverage: 0.035           
+min_signature_distance: 0.05  
 min_samples: 30               # 少于这个数不给标定
 max_samples: 300
 max_view_error_px: 0.8        # 单视图重投影误差剔除上限

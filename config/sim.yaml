@@ -1,93 +1,49 @@
-# sim 后端 (MuJoCo) 参数 —— 仓库根 config/ 是配置的唯一真源。
-
+# sim 后端
 model:
   scene: scene.xml                  
 
 physics:
   timestep: null                    # null = 用 MJCF 自带的 0.001 s
-  realtime_factor: 1.0              # 物理线程按此倍速对齐墙钟
-  # 一次取锁跑多少个物理步: 太大 (=发布周期的 10 步) 会把批次抖动直接传给
-  # /mcu/arm/state (实测开 viewer 时掉到 91 Hz, 抖动 8~20 ms); 5 步够细了。
+  realtime_factor: 1.0              # 物理线程按此倍速对齐墙钟。
   substeps: 5
-  disable_contact: false            # true = 置 mjDSBL_CONTACT, 排查穿模/自碰时用
+  disable_contact: false            
 
 publish:
-  state_hz: 100.0                   # /mcu/arm/state 频率
-  use_sim_time: false               # 本轮跟墙钟, 免得 planning 那边也要配
+  state_hz: 100.0                   
+  use_sim_time: false               
 
 arm:
   joint_names: [J1, J2, J3, J4, J5, J6]
-  # 实测这组 PD (带重力补偿) 稳态误差约 0.03°; 不带补偿 kp=80 时会差到 1.74°
   kp: [400.0, 400.0, 200.0, 80.0, 60.0, 30.0]
   kd: null                          # null = kp * 0.1
-  tau_max: 50.0                     # 力矩饱和, 防数值炸
-  # 启动 qpos。 注意 MJCF 里 J4 的 range 是 [0, 1.57], 0 正好贴着下限,
-  # 所以 home 别用全 0。 planning 的 joint_limits 现在与 MJCF range 取同一组数,
-  # 这组落在两边之内。
-  # 2026-10-17: 夹爪上挂了矿石后, 旧值 [0.0, 0.3, 0.5, 0.5, 0.3, 0.0] 下矿石网格贴到底盘 (距离 0),
-  # 换成附近这组: 胶囊膨胀 2 cm 仍无碰撞, 矿石网格离底盘 40 mm (test_collision_safety 的 home 用例守着)。
+  tau_max: 50.0                     
   home: [0.1, 0.31, 0.67, 0.33, 0.44, -0.17]
-  # 升降轴 line 的锁定高度 (m, 0 = 最低, 0.38 = 升到顶)。 arm_plugin 启动时写进 qpos 并用软 PD 锁住;
-  # 必须与 config/planning.yaml 的 collision.line_m 相同。
-  # 2026-10-17 定为 0.1: 升到顶 (0.38) 时 TCP 离地最低约 0.707 m, 够不到三级 E 高度 (500~700 mm); 见 todo.md。
   line_m: 0.1
 
 gripper:
-  close_time_s: 0.4                 # 开合过渡时长, 期间 gripper_state=2 (moving)
-  hold_force: 20.0                  # 闭合后上报的 gripper_force (N), 目前是常量
+  close_time_s: 0.4                 
+  hold_force: 20.0                  
 
 station:
-  publish_pose: true                # 是否发真值站姿 /vision/exchange_pose
+  publish_pose: true                
   pose_hz: 5.0
-  # 站体位姿的来法: 用这组"插到底"的演示关节角做 MuJoCo FK, 取 TCP 位姿当站体系
-  # (与 planning 的约定一致: 站体系 = 完全插入时的 TCP = ring 点, +x 指向机器人 (退出方向),
-  # 待插位姿在 +x 一侧, 插入沿 -x;
-  # 工具偏置读 planning 的 arm.tool.tcp_offset_6_tcp)。
-  # 2026-10-15 换成这组 (只作备用/测试审计站姿): 插入轴水平; 在装配分支 0 (planning.exchange.ik_branches)
-  # 上 "退开 0.25 m -> 插到底 -> 滑动 0.104 m" 全程有解、相邻路点单轴变化 <= 0.22 rad, 碰撞检测 (站体 +
-  # 桩体 + 车体, cc_link6 vs 桩体豁免) 下 BIT* 接近 + 滑动都过稠密复检 (离线验证)。 代价: 站体 z 轴是水平的
-  # (站体侧躺, 滑动方向水平) —— 随机搜了 2500 组"站体 z 竖直"的站姿, 在当前 TCP / 6 胶囊 / 车体下
-  # 没有一组能同分支走完插入 + 滑动且无碰撞。 旧值 [-0.25, 1.971, 1.341, 0.364, 0.257, 0.293] (z 竖直,
-  # 只有分支 4 能插且最后一步构型翻转 2.58 rad, 滑动不可达) 留在 test 里当审计场景。
   from_joint: [1.3744, 0.6022, 2.7398, 0.3128, 0.5711, 1.3369]
-  pose_xyz_rpy: null                # 显式给 [x,y,z,r,p,y] 则覆盖上面两项 (调试用)
-  # 按 RMUC2026 规则手册 5.3.3 / 表 5-10 摆站体 (enabled 时优先于 from_joint; pose_xyz_rpy 仍最优先)。
-  # pose: 科技核心位姿 [x, y, z (mm), θ, φ, α (°)], 装配坐标系 OXYZ (O = 底座正面与地面交线中点, X 负向指向科技核心,
-  #       Z 竖直向上, z 是离机器人所站装配区地面的高度); 三级范围 x∈[-100,0] y∈[100,300] z∈[500,700]
-  #       θ∈[-90,90] φ∈[0,90] α∈[-45,45]。 换算见 sim/station_pose.py。
-  # chassis_in_O: 底盘 base_link 原点在 OXYZ 下的 [x, y (m), yaw (°)], yaw=180 = 车头正对科技核心;
-  #       车头 (base_link x = +0.294) 不能越过底座正面 X=0。
-  # 2026-10-17 离线搜索 (line = 0.1, 分支 0, 碰撞开) 选的这组: 插到底后沿站体 z 平移满 104 mm,
-  #       插入 + 平移稠密复检胶囊膨胀 2 cm 无碰撞; 最常规的 θ=0 φ=90 α=0 只能推 40~45 mm (腕部撞科技核心碰撞体,
-  #       规划里科技核心不随平移移动, 偏保守)。 底盘四角离底座正面 0.02 m。
-  #       from_joint 只是备用 (planning 测试里当审计站姿); 两个 assembly demo 都由 /vision/exchange_pose
-  #       读 sim 的站姿, 与用哪组无关, 不需要再传 station.rmuc.enabled:=false。
+  pose_xyz_rpy: null                
   rmuc:
     enabled: true
     pose: [0.0, 200.0, 700.0, 0.0, 60.0, 45.0]
     chassis_in_O: [0.380851, -0.05, 165.0]
-  # 科技核心 (exchange_column) 的 level 3 关节 step3_slide / p_axis / q_axis (见 exchange_station.xml)。
-  # 没有接触物理: 矿石插在科技核心里 (TCP 在站体系下离插入轴 < engage_radius_m) 时,
-  # step3_slide 直接跟随 TCP 的站体 z; 偏离超过 release_radius_m 才脱开 (滞回, 容忍回放跟踪误差)。
-  # P/Q 本轮固定 0。 以后改成 RM2026 的接触推动方式见 todo.md。
   column:
     follow_tcp: true
     engage_radius_m: 0.01
     release_radius_m: 0.03
     publish_every: 5                  # 每 5 次状态发布发一次 /sim/exchange_column/joint_states (100 Hz -> 20 Hz)
-
 mount:
-  # line_link -> arm_base 的安装常量 F0 (行优先 16 个数)。
-  # 来源: src/planning/tools/print_config.py (从 URDF 生成), test_urdf_consistency.py 守着。
-  # arm_base x 朝车头 (base_link +x), 见 docs/superpowers/specs/2026-10-17-arm-base-chassis-frame-design.md;
-  # line_link 本身绕 x 翻转了 180°, 所以这里是 y、z 轴翻转, 沿 z 偏 -0.107 m。
-  # ⚠️ 只在 line = 0 时成立; line 一升降就要改成每帧读 line_link 的实时位姿。
   line_link_T_arm_base:
     [1.0, 0.0, 0.0, 0.0,
      0.0, -1.0, 0.0, 0.0,
      0.0, 0.0, -1.0, -0.107,
      0.0, 0.0, 0.0, 1.0]
-  # 第 6 DH 系 -> URDF/MJCF link_6 的常量 C (绕 x 转 180°), 同一处来源 (print_config.py)。
   frame6_T_link6:
     [1.0,  0.0,  0.0, 0.0,
      0.0, -1.0,  0.0, 0.0,
@@ -95,5 +51,5 @@ mount:
      0.0,  0.0,  0.0, 1.0]
 
 viewer:
-  enable: true                      # false = 无头运行 (CI / 远程)
+  enable: true                      
   fps: 60.0
