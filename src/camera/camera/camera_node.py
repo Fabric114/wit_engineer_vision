@@ -7,6 +7,7 @@ import numpy as np
 import rclpy
 import yaml
 from cv_bridge import CvBridge
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
@@ -19,6 +20,8 @@ DRIVER_KEYS = (
 )
 # video 后端的构造参数 (VideoCamera.__init__)
 VIDEO_KEYS = ("path", "width", "height", "loop", "start_frame")
+# realsense 后端的构造参数 (RealSenseCamera.__init__); enable_depth 由节点按 depth 设置算出
+REALSENSE_KEYS = ("sn", "width", "height", "enable_depth", "timeout_ms")
 
 
 def _config_dir() -> Path:
@@ -37,7 +40,7 @@ def _load_yaml(path: Path) -> dict:
 def _build_driver(cam_type: str, params: dict, logger):
     """按 type 惰性导入对应驱动并构造。惰性导入: 只加载真正用到的 SDK,
     跑 hik 时不会因为缺 gxipy 而失败, 反之亦然。"""
-    keys = VIDEO_KEYS if cam_type == "video" else DRIVER_KEYS
+    keys = {"video": VIDEO_KEYS, "realsense": REALSENSE_KEYS}.get(cam_type, DRIVER_KEYS)
     kwargs = {k: params[k] for k in keys if k in params}
     # config 用 fps 表示目标帧率, 驱动构造参数名是 frame_rate
     if "fps" in params:
@@ -46,6 +49,9 @@ def _build_driver(cam_type: str, params: dict, logger):
     if cam_type == "video":
         from camera.video_camera import VideoCamera
         return VideoCamera(**kwargs)
+    if cam_type == "realsense":
+        from camera.realsense_camera import RealSenseCamera
+        return RealSenseCamera(**kwargs)
     if cam_type == "hik":
         from camera.hik_camera import HikCamera
         return HikCamera(**kwargs)
@@ -56,7 +62,7 @@ def _build_driver(cam_type: str, params: dict, logger):
             sys.path.append(pkg_root)
         from camera.daheng_camera import DahengCamera
         return DahengCamera(**kwargs)
-    raise ValueError(f"未知相机类型 type={cam_type!r} (支持: hik | daheng | video)")
+    raise ValueError(f"未知相机类型 type={cam_type!r} (支持: hik | daheng | realsense | video)")
 
 
 def _build_camera_info(frame_id: str, logger) -> CameraInfo:
@@ -84,6 +90,36 @@ def _build_camera_info(frame_id: str, logger) -> CameraInfo:
             f" 先跑 camera_calib 标定, 把 camera_info.yaml 拷到 {path.parent}"
         )
     return info
+
+
+def _camera_info_from_intrinsics(frame_id: str, intr: dict) -> CameraInfo:
+    """RealSense 彩色流出厂内参 -> CameraInfo (对齐深度与彩色共用)。"""
+    info = CameraInfo()
+    info.header.frame_id = frame_id
+    info.width = int(intr["width"])
+    info.height = int(intr["height"])
+    fx, fy, cx, cy = intr["fx"], intr["fy"], intr["ppx"], intr["ppy"]
+    info.distortion_model = "plumb_bob"
+    info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+    info.d = [float(c) for c in intr["coeffs"]]
+    info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    info.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+    return info
+
+
+def _build_depth_shm_publisher(config: dict, height: int, width: int, logger):
+    """深度共享内存: 单通道 uint16, 区域名 depth_shm_region; 与彩色区域同槽数。"""
+    if not bool(config.get("publish_shm", True)):
+        return None
+    try:
+        from shm import ImagePublisher, load_shm_config
+    except Exception as exc:
+        logger.warn(f"未找到 shm ({exc}), 跳过深度共享内存发布; 请先 build shm")
+        return None
+    region = str(config.get("depth_shm_region", "")).strip() or "wit_engineer_depth"
+    pub = ImagePublisher(region, height, width, 1, np.uint16, load_shm_config().n_slots)
+    logger.info(f"深度共享内存就绪: /dev/shm/{region} {height}x{width}x1 uint16")
+    return pub
 
 
 def _build_shm_publisher(config: dict, height: int, width: int, logger):
@@ -127,6 +163,25 @@ class CameraNode(Node):
         video_path = str(self.get_parameter("video_path").value).strip()
         if cam_type == "video" and video_path:
             params["path"] = video_path
+        # realsense: 是否开深度。ROS 参数 depth 可覆盖 (空串沿用 config);
+        # auto 跟 config/detector.yaml 的 type 走 (eu 开, tc 关)
+        self._depth_enabled = False
+        if cam_type == "realsense":
+            from camera.realsense_camera import resolve_enable_depth
+            # dynamic_typing: 命令行 depth:=true 会被解析成 bool, depth:=auto 是 str, 两种都收
+            self.declare_parameter("depth", "", ParameterDescriptor(dynamic_typing=True))
+            depth_override = self.get_parameter("depth").value
+            depth_setting = (
+                depth_override if isinstance(depth_override, bool)
+                else (str(depth_override).strip() or params.get("depth", "auto"))
+            )
+            detector_type = str(_load_yaml(_config_dir() / "detector.yaml").get("type", ""))
+            self._depth_enabled = resolve_enable_depth(depth_setting, detector_type)
+            params["enable_depth"] = self._depth_enabled
+            self.get_logger().info(
+                f"realsense depth={depth_setting} detector.type={detector_type or '<未设>'}"
+                f" -> {'彩色+对齐深度' if self._depth_enabled else '仅彩色'}"
+            )
         self._frame_id = str(params.get("frame_id", "camera"))
         self._publish_fps = float(params.get("fps", 30.0))
         self._retry_interval_s = float(params.get("retry_interval_s", 2.0))
@@ -140,12 +195,24 @@ class CameraNode(Node):
         self._info_pub = self.create_publisher(
             CameraInfo, str(params.get("camera_info_topic", "/camera/camera_info")), 1
         )
+        self._depth_pub = None
+        if self._depth_enabled:
+            self._depth_pub = self.create_publisher(
+                Image, str(params.get("depth_topic", "/camera/depth/image_raw")),
+                qos_profile_sensor_data,
+            )
         self._driver = _build_driver(cam_type, params, self.get_logger())
         # 分辨率以驱动为准: video 的 width/height=0 表示用视频原生尺寸
         width, height = int(self._driver.width), int(self._driver.height)
         if cam_type == "video":
             self._publish_fps = float(self._driver.frame_rate)
-        self._camera_info = _build_camera_info(self._frame_id, self.get_logger())
+        # realsense 用设备出厂内参 (open 后在 _try_open 里填), 不读 camera_info.yaml
+        self._uses_device_intrinsics = hasattr(self._driver, "intrinsics")
+        if self._uses_device_intrinsics:
+            self._camera_info = CameraInfo()
+            self._camera_info.header.frame_id = self._frame_id
+        else:
+            self._camera_info = _build_camera_info(self._frame_id, self.get_logger())
         if self._camera_info.width and (self._camera_info.width, self._camera_info.height) != (width, height):
             self.get_logger().warn(
                 f"camera_info.yaml 是 {self._camera_info.width}x{self._camera_info.height}, "
@@ -159,6 +226,10 @@ class CameraNode(Node):
         # 共享内存生产者: 把每帧零拷贝写进 /dev/shm, 供 detector/solver 消费。
         # publish_shm 默认开; 关掉则只发 ROS topic (见 camera.yaml)。
         self._shm_pub = _build_shm_publisher(config, height, width, self.get_logger())
+        self._depth_shm_pub = (
+            _build_depth_shm_publisher(config, height, width, self.get_logger())
+            if self._depth_enabled else None
+        )
 
         self.get_logger().info(
             f"相机后端: {cam_type} "
@@ -181,6 +252,13 @@ class CameraNode(Node):
             if self._driver.start_streaming():
                 self._last_frame_monotonic = time.monotonic()
                 self._last_ts = None
+                if self._uses_device_intrinsics:
+                    intr = self._driver.intrinsics()
+                    self._camera_info = _camera_info_from_intrinsics(self._frame_id, intr)
+                    self.get_logger().info(
+                        f"内参取自设备出厂标定: {intr['width']}x{intr['height']} "
+                        f"fx={intr['fx']:.2f} fy={intr['fy']:.2f}"
+                    )
                 caps = self._driver.get_capabilities()
                 if caps:
                     self.get_logger().info(f"相机就绪: {caps}")
@@ -208,8 +286,16 @@ class CameraNode(Node):
             self._try_open(initial=True)
             return
 
-        frame, ts = self._driver.get_latest()
+        depth = None
+        if self._depth_enabled:
+            frame, depth, ts = self._driver.get_latest_rgbd()
+        else:
+            frame, ts = self._driver.get_latest()
         if frame is None or ts == self._last_ts:
+            return
+        if self._depth_enabled and depth is None:
+            # 要 RGB-D 却没有深度: 显式报错并丢帧, 不发只有彩色的"RGB-D"
+            self.get_logger().error("开了深度但本帧无深度, 丢弃", throttle_duration_sec=2.0)
             return
         self._last_ts = ts
         self._last_frame_monotonic = now_monotonic
@@ -230,6 +316,19 @@ class CameraNode(Node):
         image_msg.header.frame_id = self._frame_id
         self._image_pub.publish(image_msg)
 
+        if depth is not None:
+            depth = np.ascontiguousarray(depth)
+            if self._depth_shm_pub is not None:
+                try:
+                    self._depth_shm_pub.publish(depth)
+                except Exception as exc:
+                    self.get_logger().warn(f"深度共享内存发布失败: {exc}", throttle_duration_sec=5.0)
+            # 已对齐到彩色: 与彩色同 frame_id / 同 camera_info, 单位 = 设备 depth_scale (D435 为 mm)
+            depth_msg = self._bridge.cv2_to_imgmsg(depth, encoding="16UC1")
+            depth_msg.header.stamp = stamp
+            depth_msg.header.frame_id = self._frame_id
+            self._depth_pub.publish(depth_msg)
+
         self._camera_info.header.stamp = stamp
         self._info_pub.publish(self._camera_info)
 
@@ -238,6 +337,8 @@ class CameraNode(Node):
             self._driver.close()
             if self._shm_pub is not None:
                 self._shm_pub.close()
+            if self._depth_shm_pub is not None:
+                self._depth_shm_pub.close()
         finally:
             super().destroy_node()
 

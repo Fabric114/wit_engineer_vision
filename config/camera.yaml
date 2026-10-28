@@ -1,6 +1,5 @@
-# 相机后端: hik = 最终方案 (2026-10-20 确认); d435i 是后续备选, 尚未写代码; video 仅离线演示。
-type: hik # (hik/daheng/video)
-# 共享内存发布（供 detector/solver 零拷贝取帧）；区域名/槽数见 config/shm.yaml, 槽位分辨率取当前相机的 width/height
+# 相机后端: hik/daheng/realsense/video
+type: hik 
 publish_shm: true
 shm_region: ""   # 空 = 用 shm 默认区域（wit_engineer_image）
 
@@ -47,14 +46,28 @@ daheng_camera:
   frame_id: "camera"
   camera_info_topic: "/camera/camera_info"
 
+realsense_camera:
+  sn: ""            
+  fps: 30.0         
+  width: 640        
+  height: 480
+  depth: auto
+  timeout_ms: 1000  # wait_for_frames 超时
+  # 内参不读 camera_info.yaml, 用设备出厂标定 (对齐深度与彩色共用一份)
+  retry_interval_s: 2.0
+  no_frame_timeout_s: 3.0
+  frame_id: "camera"
+  camera_info_topic: "/camera/camera_info"
+  depth_topic: "/camera/depth/image_raw"   # 16UC1, 已对齐到彩色, D435 单位 mm
+depth_shm_region: ""
+
 video_camera:
-  # 视频文件路径 (也可 --ros-args -p video_path:=...)
+  # 视频文件路径
   path: "assets/video/test1.mp4"
-  # 输出分辨率; 0 = 用视频原生分辨率。非 0 则逐帧缩放, 内参须与输出分辨率一致
+  # 输出分辨率; 0 = 用视频原生分辨率
   width: 0
   height: 0
-  # 回放帧率; 0 = 用视频文件自带帧率
-  fps: 0.0
+  fps: 0.0  # =0用视频文件自带帧率
   loop: true
   start_frame: 0
   no_frame_timeout_s: 3.0

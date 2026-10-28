@@ -4,7 +4,6 @@
 detector / solver 照常从共享内存或 /camera/image_raw 取帧, 不感知来源。
 
 分辨率: width/height 为 0 时用视频原生分辨率; 非 0 时把每帧缩放到该尺寸
-(内参 camera_info.yaml 必须与最终输出分辨率一致, 否则 PnP 结果不对)。
 """
 
 from __future__ import annotations

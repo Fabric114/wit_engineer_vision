@@ -14,12 +14,13 @@ setup(
     zip_safe=True,
     maintainer="sxh",
     maintainer_email="shaozi2233@gmail.com",
-    description="相机标定: 棋盘格/ChArUco/圆点板 内参标定 + camera->arm_base 手眼外参库函数 (手眼暂无 CLI 入口)",
+    description="相机内参标定与 camera->arm_base 离线手眼外参标定",
     license="MIT",
     entry_points={
         "console_scripts": [
             "intrinsic_calib_node = camera_calib.intrinsic_calib_node:main",
             "offline_calib = camera_calib.offline_calib:main",
+            "hand_eye_calib = camera_calib.hand_eye_calib:main",
         ],
     },
 )
