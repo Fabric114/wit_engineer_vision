@@ -1,27 +1,12 @@
 # trajectory.py — 轨迹时间参数化 (把路径变成轨迹)。
-"""trajectory.py — 轨迹时间参数化 (把"路径"变成"轨迹")。
-
-【这个文件干什么】
-规划器 (type2/type3) 输出的只是一串"路点" (关节角序列), 是纯几何的路径,
-不带时间, 也没有速度/加速度。 这个文件把这串路点在给定总时长内用五次多项式
-(quintic) 平滑插值, 产出每个时刻的 位置/速度/加速度/时间戳, 并保证起点和
-终点的速度、加速度都为 0 (平顺起停)。
-插值是保形的: 每个采样点每个关节都落在所在段两端路点之间 (极值处停住、过冲段置零导数),
-所以路点在限位内则轨迹在限位内。 发布前还要过 validate_trajectory (有限值/首末点/限位,
-给了速度/加速度上限才查上限 —— config 目前没有真实上限)。
-
-【要懂的概念】
-- "路径 (path)" = 只有形状, 一串点; "轨迹 (trajectory)" = 路径 + 时间,
-  即"几点几分到哪、速度多少"。 机器人执行需要的是轨迹。
-- FixedDurationParameterizer: 固定总时长的参数化器, 是这里的主入口。
-这个文件是通用数学, 换臂不用改 (只是配置里可调总时长/采样步长)。
-"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
+
+from .failure import FailureReason, PlanningFailure
 
 #: 判定"越出路点区间"时容忍的浮点舍入 (rad)
 _OVERSHOOT_TOLERANCE = 1e-12
@@ -200,35 +185,36 @@ def validate_trajectory(
     collision_checker=None,
     position_tolerance: float = 1e-9,
 ) -> None:
-    """发布前的最终轨迹校验, 不通过抛 ValueError。
+    """发布前的最终轨迹校验, 不通过抛 PlanningFailure (ValueError 子类)。
 
     查: 有限值、时间戳严格递增、首末点等于首末路点、有限位关节不越限;
     速度/加速度上限只在调用方给出时检查 (config 目前没有真实上限, 不在这里编默认值);
     给了 collision_checker 就对每个稠密采样点查碰撞 (离散采样, 不是连续碰撞检测)。
+    失败原因: 碰撞为 collision, 其余为 trajectory_invalid。
     """
     # 维度校验: 轨迹与路点关节数须等于 joint_space.dof。
     positions = trajectory.positions
     points = np.asarray(waypoints, dtype=float)
     if positions.shape[1] != joint_space.dof or points.ndim != 2 or points.shape[1] != joint_space.dof:
-        raise ValueError(f"trajectory/waypoints must have {joint_space.dof} joints")
+        raise PlanningFailure(FailureReason.TRAJECTORY_INVALID, f"trajectory/waypoints must have {joint_space.dof} joints")
     # 有限值与时间戳单调性。
     values = (positions, trajectory.velocities, trajectory.accelerations, trajectory.timestamps)
     if not all(np.all(np.isfinite(value)) for value in values):
-        raise ValueError("trajectory contains non-finite values")
+        raise PlanningFailure(FailureReason.TRAJECTORY_INVALID, "trajectory contains non-finite values")
     if np.any(np.diff(trajectory.timestamps) <= 0.0):
-        raise ValueError("trajectory timestamps must be strictly increasing")
+        raise PlanningFailure(FailureReason.TRAJECTORY_INVALID, "trajectory timestamps must be strictly increasing")
     # 首末点须与首末路点一致 (容差 position_tolerance)。
     if np.max(np.abs(positions[0] - points[0])) > position_tolerance:
-        raise ValueError("trajectory first point does not match the first waypoint")
+        raise PlanningFailure(FailureReason.TRAJECTORY_INVALID, "trajectory first point does not match the first waypoint")
     if np.max(np.abs(positions[-1] - points[-1])) > position_tolerance:
-        raise ValueError("trajectory last point does not match the last waypoint")
+        raise PlanningFailure(FailureReason.TRAJECTORY_INVALID, "trajectory last point does not match the last waypoint")
     # 有限位关节不得越限 (连续关节不查)。
     bounded = joint_space.bounded
     outside = (positions[:, bounded] < joint_space.lower[bounded] - position_tolerance) | (
         positions[:, bounded] > joint_space.upper[bounded] + position_tolerance
     )
     if np.any(outside):
-        raise ValueError(f"trajectory leaves joint limits at {int(np.count_nonzero(outside.any(axis=1)))} samples")
+        raise PlanningFailure(FailureReason.TRAJECTORY_INVALID, f"trajectory leaves joint limits at {int(np.count_nonzero(outside.any(axis=1)))} samples")
     # 可选: 逐关节峰值速度/加速度与上限比较。
     for name, data, limits in (
         ("velocity", trajectory.velocities, velocity_limits),
@@ -239,7 +225,8 @@ def validate_trajectory(
         peak = np.max(np.abs(data), axis=0)
         exceeded = peak > np.asarray(limits, dtype=float)
         if np.any(exceeded):
-            raise ValueError(
+            raise PlanningFailure(
+                FailureReason.TRAJECTORY_INVALID,
                 f"trajectory {name} exceeds limit on joints {np.flatnonzero(exceeded).tolist()}: "
                 f"peak={np.round(peak, 4).tolist()}"
             )
@@ -248,7 +235,8 @@ def validate_trajectory(
         collides = np.asarray(collision_checker.check_configs(positions), dtype=bool)
         if np.any(collides):
             first = int(np.flatnonzero(collides)[0])
-            raise ValueError(
+            raise PlanningFailure(
+                FailureReason.COLLISION,
                 f"trajectory collides at {int(np.count_nonzero(collides))} samples, "
                 f"first t={float(trajectory.timestamps[first]):.3f}s"
             )

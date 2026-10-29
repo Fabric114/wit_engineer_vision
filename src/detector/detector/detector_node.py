@@ -194,7 +194,8 @@ class DetectorNode(Node):
                 cv2.waitKey(1)
 
     def _publish_observations(self, result: DetectionResult, stamp) -> None:
-        for inst in result.instances:
+        # 每类只发最高分实例: 一帧最多 2 条 (pillar + exchange), 不会挤爆 pnp_node 的 QoS 队列 (深度 5)。
+        for inst in result.best_per_class():
             if not inst.has_keypoints():
                 continue
             msg = self._KeypointObservation()

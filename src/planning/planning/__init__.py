@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+# 规划失败原因与 error_code 映射
+from . import failure
 # 运动学模型 (DH / FK / IK)
 from .arm_model import ArmModel
 # 关节空间 (限位与角度处理)
@@ -38,6 +40,7 @@ from .viterbi import ViterbiResult, solve_viterbi
 # 公共导出列表; collision (hpp-fcl) 与 type2 (OMPL) 依赖可选系统库, 不在包入口导入。
 __all__ = [
     "load_config",
+    "failure",
     "ArmModel",
     "JointSpace",
     "FixedDurationParameterizer",

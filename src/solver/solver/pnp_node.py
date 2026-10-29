@@ -9,13 +9,14 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
 
 from .extrinsic import compose, is_identity, load_extrinsic, matrix_from_pose, pose_from_matrix
 from .pairing import PartObservation, solve_best_candidate
-from .schema import load_schema
+from .schema import load_schemas
 from .solver import PnPEstimator
 
 
@@ -93,21 +94,31 @@ def _describe_transform(T) -> str:
     return f"t = ({xyz}) m, |rotvec| = {np.degrees(np.linalg.norm(rotvec)):.2f} deg, rotvec = {rotvec[:, 0].round(4).tolist()}"
 
 
+def _seconds(key) -> float:
+    return key[0] + key[1] * 1e-9
+
+
 class _FrameBuffer:
     """把同一时间戳的逐实例观测攒成一帧。
 
     detector 每帧按实例连续发布多条消息且时间戳相同; 收到更新的时间戳, 或当前帧
     超过 timeout_s 没有新消息时, 释放该帧。早于已释放帧的迟到消息直接丢弃。
+    stamp 倒退超过 backstep_s 视为时钟回跳 (NTP 校时 / 改系统时间): 丢掉旧状态从新 stamp 重新开始,
+    否则回跳之后的所有新帧都会被当成迟到消息永久丢弃。
     """
 
-    def __init__(self, timeout_s: float):
+    def __init__(self, timeout_s: float, backstep_s: float = 1.0):
         self.timeout_s = float(timeout_s)
+        self.backstep_s = float(backstep_s)
         self._key = None
         self._items: list = []
         self._last_arrival = 0.0
         self._released = None
 
     def add(self, key, item, now: float) -> list:
+        newest = self._key if self._key is not None else self._released
+        if newest is not None and _seconds(newest) - _seconds(key) > self.backstep_s:
+            self._released, self._key, self._items = None, None, []
         if self._released is not None and key <= self._released:
             return []
         released = []
@@ -154,15 +165,21 @@ class PnpNode:
                 self.declare_parameter("base_output_topic", "/vision/exchange_pose")
                 self.declare_parameter("extrinsic_config", str(_config_dir() / "camera_extrinsic.yaml"))
                 self.declare_parameter("tf_lookup_timeout_s", 0.05)
+                self.declare_parameter("schema_config", str(_config_dir() / "keypoint_schema.yaml"))
                 self.declare_parameter("confidence_threshold", 0.2)
                 self.declare_parameter("reprojection_error_threshold_px", 5.0)
+                self.declare_parameter("ransac_reprojection_error_px", 5.0)
+                self.declare_parameter("min_inliers", 4)
                 self.declare_parameter("frame_timeout_s", 0.03)
                 self._camera_info = None
-                self._schemas = {}
+                # schema 与门限启动时校验: 文件缺失 / YAML 写坏 / 参数非法直接起不来, 不拖到第一帧。
+                self._schemas = load_schemas(self.get_parameter("schema_config").value)
                 self._frames = _FrameBuffer(self.get_parameter("frame_timeout_s").value)
                 self._estimator = PnPEstimator(
-                    self.get_parameter("confidence_threshold").value,
-                    self.get_parameter("reprojection_error_threshold_px").value,
+                    confidence_threshold=self.get_parameter("confidence_threshold").value,
+                    reprojection_error_threshold_px=self.get_parameter("reprojection_error_threshold_px").value,
+                    min_inliers=self.get_parameter("min_inliers").value,
+                    ransac_reprojection_error_px=self.get_parameter("ransac_reprojection_error_px").value,
                 )
                 self._pub = self.create_publisher(
                     PoseStamped, self.get_parameter("output_topic").value, 10
@@ -202,7 +219,8 @@ class PnpNode:
                 self.create_timer(0.01, self._on_timer)
 
             def _now(self):
-                return self.get_clock().now().nanoseconds * 1e-9
+                # 攒帧超时只看到达间隔, 用单调时钟, 不受系统时间回跳影响。
+                return time.monotonic()
 
             def _on_camera_info(self, msg):
                 if msg.header.frame_id != self._camera_frame:
@@ -217,13 +235,6 @@ class PnpNode:
                 for key, items in self._frames.flush(self._now()):
                     self._solve_frame(items)
 
-            def _schema(self, name):
-                schema = self._schemas.get(name)
-                if schema is None:
-                    schema = load_schema(_config_dir() / "keypoint_schema.yaml", name)
-                    self._schemas[name] = schema
-                return schema
-
             def _on_observation(self, msg):
                 key = (msg.header.stamp.sec, msg.header.stamp.nanosec)
                 for _, items in self._frames.add(key, msg, self._now()):
@@ -231,32 +242,38 @@ class PnpNode:
 
             def _solve_frame(self, messages):
                 if self._camera_info is None:
-                    self.get_logger().warning("等待 CameraInfo，跳过观测")
+                    self.get_logger().warning("等待 CameraInfo，跳过观测", throttle_duration_sec=2.0)
                     return
                 camera_frame = self._camera_info.header.frame_id
                 by_schema = {}
                 for msg in messages:
                     if msg.header.frame_id and camera_frame and msg.header.frame_id != camera_frame:
-                        self.get_logger().warning("观测与 CameraInfo frame_id 不一致")
+                        self.get_logger().warning("观测与 CameraInfo frame_id 不一致", throttle_duration_sec=2.0)
                         continue
                     try:
                         schema_name, class_id, image_points, confidence = _observation_to_arrays(msg)
                     except ValueError as exc:
-                        self.get_logger().warning(f"无效视觉观测: {exc}")
+                        self.get_logger().warning(f"无效视觉观测: {exc}", throttle_duration_sec=1.0)
                         continue
                     by_schema.setdefault(schema_name, []).append(
                         (msg, PartObservation(class_id, image_points, confidence)))
                 for schema_name, entries in by_schema.items():
+                    schema = self._schemas.get(schema_name)
+                    if schema is None:
+                        self.get_logger().warning(
+                            f"观测 schema={schema_name!r} 不在 keypoint_schema.yaml ({sorted(self._schemas)}), 丢弃",
+                            throttle_duration_sec=2.0)
+                        continue
                     try:
-                        schema = self._schema(schema_name)
                         K, D = _camera_info_to_arrays(self._camera_info)
                         solution = solve_best_candidate(
                             schema, [part for _, part in entries], self._estimator, K, D)
-                    except (KeyError, ValueError) as exc:
-                        self.get_logger().warning(f"无效视觉观测: {exc}")
+                    except ValueError as exc:
+                        self.get_logger().warning(f"无效视觉观测: {exc}", throttle_duration_sec=1.0)
                         continue
                     if solution.estimate is None:
-                        self.get_logger().warning(f"PnP 无效: {'; '.join(solution.reasons)}")
+                        self.get_logger().warning(f"PnP 无效: {'; '.join(solution.reasons)}",
+                                                  throttle_duration_sec=1.0)
                         continue
                     self._publish(entries[0][0].header.stamp, solution.estimate)
 

@@ -69,13 +69,29 @@ def _as_int(value: Any, label: str) -> int:
         raise ValueError(f"{label} must be an integer") from exc
 
 
-def load_schema(path: str | Path, name: str) -> KeypointSchema:
+def _read_root(path: str | Path) -> dict[str, Any]:
     with Path(path).open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
-    root = _as_mapping(document, "schema")
+    return _as_mapping(document, "schema")
+
+
+def load_schema(path: str | Path, name: str) -> KeypointSchema:
+    root = _read_root(path)
     if name not in root:
         raise KeyError(f"schema {name!r} missing")
-    entry = _as_mapping(root[name], f"schema {name}")
+    return _parse_schema(name, root[name])
+
+
+def load_schemas(path: str | Path) -> dict[str, KeypointSchema]:
+    """读取并校验文件里的全部 schema; 节点启动时调用, 有错直接起不来。"""
+    root = _read_root(path)
+    if not root:
+        raise ValueError(f"{path}: no schema entries")
+    return {str(name): _parse_schema(str(name), entry) for name, entry in root.items()}
+
+
+def _parse_schema(name: str, entry: Any) -> KeypointSchema:
+    entry = _as_mapping(entry, f"schema {name}")
     keypoints = entry.get("keypoints")
     if not isinstance(keypoints, dict) or not keypoints:
         raise ValueError(f"schema {name} keypoints must be a non-empty mapping")

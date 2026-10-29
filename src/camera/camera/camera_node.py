@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import rclpy
 import yaml
+from builtin_interfaces.msg import Time as TimeMsg
 from cv_bridge import CvBridge
 from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
@@ -66,7 +67,7 @@ def _build_driver(cam_type: str, params: dict, logger):
 
 
 def _build_camera_info(frame_id: str, logger) -> CameraInfo:
-    """从 config/camera_info.yaml 读标准 ROS 内参; 没标定就发空 CameraInfo 并告警。"""
+    """从 config/camera_info.yaml 读标准 ROS 内参"""
     info = CameraInfo()
     info.header.frame_id = frame_id
     info.distortion_model = "plumb_bob"
@@ -87,7 +88,6 @@ def _build_camera_info(frame_id: str, logger) -> CameraInfo:
     except Exception as exc:
         logger.warn(
             f"未加载到有效内参 ({exc}); /camera/camera_info 将为空, PnP 无法工作。"
-            f" 先跑 camera_calib 标定, 把 camera_info.yaml 拷到 {path.parent}"
         )
     return info
 
@@ -105,6 +105,12 @@ def _camera_info_from_intrinsics(frame_id: str, intr: dict) -> CameraInfo:
     info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
     info.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
     return info
+
+
+def _stamp_from_ns(ts_ns: int) -> TimeMsg:
+    stamp = TimeMsg()
+    stamp.sec, stamp.nanosec = divmod(int(ts_ns), 1_000_000_000)
+    return stamp
 
 
 def _build_depth_shm_publisher(config: dict, height: int, width: int, logger):
@@ -301,33 +307,38 @@ class CameraNode(Node):
         self._last_frame_monotonic = now_monotonic
 
         frame = np.ascontiguousarray(frame)
-        stamp = self.get_clock().now().to_msg()
+        # 一帧只取一次时间: 驱动取流线程收到帧时的墙钟 (time.time()), shm / 图像 / 深度 / CameraInfo 共用,
+        # 下游 detector / pnp 一路继承这个 stamp。
+        ts_ns = int(round(float(ts) * 1e9))
+        stamp = _stamp_from_ns(ts_ns)
 
         # 共享内存 (零拷贝主链路): detector/solver 从这里取帧
         if self._shm_pub is not None:
             try:
-                self._shm_pub.publish(frame)
+                self._shm_pub.publish(frame, timestamp_ns=ts_ns)
             except Exception as exc:  # 尺寸/类型不匹配等, 不应拖垮取流
                 self.get_logger().warn(f"共享内存发布失败: {exc}", throttle_duration_sec=5.0)
 
-        # ROS topic (兼容 rviz / 录包 / 未接入 shm 的消费者)
-        image_msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-        image_msg.header.stamp = stamp
-        image_msg.header.frame_id = self._frame_id
-        self._image_pub.publish(image_msg)
+        # ROS topic (兼容 rviz / 录包 / 未接入 shm 的消费者); 没人订阅就不转换, 省每帧拷贝
+        if self._image_pub.get_subscription_count() > 0:
+            image_msg = self._bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            image_msg.header.stamp = stamp
+            image_msg.header.frame_id = self._frame_id
+            self._image_pub.publish(image_msg)
 
         if depth is not None:
             depth = np.ascontiguousarray(depth)
             if self._depth_shm_pub is not None:
                 try:
-                    self._depth_shm_pub.publish(depth)
+                    self._depth_shm_pub.publish(depth, timestamp_ns=ts_ns)
                 except Exception as exc:
                     self.get_logger().warn(f"深度共享内存发布失败: {exc}", throttle_duration_sec=5.0)
             # 已对齐到彩色: 与彩色同 frame_id / 同 camera_info, 单位 = 设备 depth_scale (D435 为 mm)
-            depth_msg = self._bridge.cv2_to_imgmsg(depth, encoding="16UC1")
-            depth_msg.header.stamp = stamp
-            depth_msg.header.frame_id = self._frame_id
-            self._depth_pub.publish(depth_msg)
+            if self._depth_pub.get_subscription_count() > 0:
+                depth_msg = self._bridge.cv2_to_imgmsg(depth, encoding="16UC1")
+                depth_msg.header.stamp = stamp
+                depth_msg.header.frame_id = self._frame_id
+                self._depth_pub.publish(depth_msg)
 
         self._camera_info.header.stamp = stamp
         self._info_pub.publish(self._camera_info)

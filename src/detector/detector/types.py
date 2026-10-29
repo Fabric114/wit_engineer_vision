@@ -41,3 +41,15 @@ class DetectionResult:
 
     def __len__(self) -> int:
         return len(self.instances)
+
+    def best_per_class(self) -> List[Instance]:
+        """每个 class_id 只留分数最高的一个实例, 按分数降序。
+
+        场上只兑一个兑换站, pillar / exchange 各取一个即可拼成完整点集。
+        """
+        best: Dict[int, Instance] = {}
+        for inst in self.instances:
+            kept = best.get(inst.class_id)
+            if kept is None or inst.score > kept.score:
+                best[inst.class_id] = inst
+        return sorted(best.values(), key=lambda inst: inst.score, reverse=True)

@@ -1,6 +1,4 @@
 # collision.py — 碰撞检测: 机械臂胶囊体 vs 场景网格 (hpp-fcl)。
-# 场景由 CollisionModel.scene_groups 组装: 站体 + 桩体 + 车体(底盘/滑台/轮) + 地面;
-# 只做胶囊↔网格, 不做臂自碰撞。
 from __future__ import annotations
 
 from dataclasses import dataclass

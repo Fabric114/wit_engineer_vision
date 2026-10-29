@@ -1,27 +1,12 @@
 # type2.py — 接近段规划: 点到点无碰撞关节路径 (OMPL BIT*)。
-"""type2.py — 接近段规划: 点到点无碰撞关节路径 (OMPL BIT*)。
-
-【这个文件干什么】
-给"起始关节角"和"目标关节角", 在 6 维关节空间里搜索一条从起点到终点、
-不越限、不碰撞的路径, 然后简化成少量稀疏路点返回。 用在"把臂从当前任意
-位置移动到兑换站前方的准备位姿"这一大段自由移动。
-
-【要懂的概念】
-- 这是"采样式运动规划": 在关节空间里随机撒点、连边、找连通路径。
-  BIT* (Batch Informed Trees) 是 OMPL 库里一种又快又优的这类算法。
-- 和 type3 的区别: type2 是"从 A 自由地走到 B"(接近段); type3 是"贴着
-  装配约束一点点插进去"(装配段)。 两段用不同算法。
-- validity_fn 是外部传入的"这个关节配置合不合法"判据 (通常接碰撞检测);
-  不想开碰撞就传一个恒返回 True 的函数。
-
-【依赖】 OMPL (系统级可选后端)。 没装 OMPL 时本文件不可用, 其余文件不受影响。
-"""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
 import numpy as np
+
+from .failure import FailureReason, PlanningFailure
 
 
 def plan_joint_path_bitstar(
@@ -102,8 +87,11 @@ def plan_joint_path_bitstar(
     solved = planner.solve(float(timeout_s))
     # TODO(注释): OMPL 的 PlannerStatus 在 APPROXIMATE_SOLUTION 时 bool 也为真,
     # 此时路径终点可能没到 goal; 这里是否需要区分精确解, 待确认。
+    # OMPL 分不清 "时间不够" 和 "根本没路": 预算内没找到一律记 timeout
     if not solved:
-        raise RuntimeError("OMPL BIT* failed to find a Type II path")
+        raise PlanningFailure(
+            FailureReason.TIMEOUT, f"OMPL BIT* found no Type II path within timeout_s={float(timeout_s):.3f}"
+        )
 
     # 路径简化: 削减冗余顶点 (最多 200 步) 并合并过近顶点, 得到稀疏路点。
     path = problem.getSolutionPath()

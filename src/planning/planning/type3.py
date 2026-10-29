@@ -1,36 +1,4 @@
 # type3.py — 装配段规划 (约束流形上的插入轨迹)。
-"""type3.py — 装配段规划: 约束流形上的插入轨迹 (本库最复杂的一块)。
-
-【这个文件干什么】
-插入/装配阶段, 末端不能像接近段那样自由乱走, 必须贴着兑换站定义的"装配
-流形"运动 —— 也就是只允许 沿轴向进给 / 滑动 / 两个方向的小旋转 这几种受约束
-的动作。 本文件负责把这样一段装配动作规划成一条可执行的关节轨迹。
-
-【它的整体流程 (读懂这 6 步就懂了 type3)】
-  1. 把装配动作离散成一串任务空间位姿 (AssemblyState -> 末端目标位姿序列);
-  2. 对每个位姿, 绕插入轴在一圈 roll 角上采样, 每个 roll 按 arm.ik_type 用 IK 解出候选
-     关节配置 (这就形成了 viterbi.py 里说的"分层网格": 层=路径点, 节点=候选);
-  3. (可选) 用碰撞检测给每个候选打分/过滤;
-  4. 用 Viterbi 在这些候选里选出一条平滑、代价最小的关节序列;
-  5. 若严格解不出来, 用 scipy 最小二乘 (least_squares) "尽力修复", 找一个
-     尽量满足约束的近似解; 残差超 best_ik.max_position_error_m / max_axis_error_deg
-     的修复点一律判失败 (sigma 只是权重, 不是验收阈值)。
-  6. 首个路点必须与实测起点 initial_joints 衔接: 差值 ≥ 1e-9 且 ≤ start_joint_tolerance_rad
-     时在前面插入 initial 作为第 0 点, 否则判失败。
-  另外两条硬逻辑: 相邻路点单轴跳变 > joint_path.max_joint_step_rad 的边直接不可走;
-  末端 continuation 由 planning_node 的 P 段传入 (Q 0->±90° 两条分支, 合并结果 = Q 缓存);
-  continuation 内相邻点同样受 max_joint_step_rad 约束。 未传时整段跳过。
-  最后再做时间参数化 (trajectory.py) 就得到可执行轨迹。
-
-【要懂的概念】
-- AssemblyState: 描述"装到哪一步"的物理坐标 (轴向偏移/滑动/两个旋转/释放),
-  AssemblyPath 就是这些状态的有序序列 (.between() 可在两个状态间线性取样)。
-- station_transform: 兑换站相对 arm_base 的 4x4 位姿 —— 正常由视觉给出;
-  你们没相机时, 从仿真里直接读 ground truth 得到 (见 README)。
-
-【依赖】 arm_model (IK) + viterbi + scipy。 几何参数 (r_p/r_q/phi 等) 在
-config 的 planning.type3.exchange_trajectory 里, 是兑换站的装配尺寸, 需按实物核对。
-"""
 
 from __future__ import annotations
 
@@ -41,6 +9,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
+from .failure import FailureReason
 from .arm_model import ArmModel
 from .viterbi import solve_viterbi
 from .transform import validate_transforms
@@ -120,6 +89,13 @@ class Type3PlanResult:
     path: list[tuple[int, int]] | None
     continuation: dict[str, object] | None
     diagnostics: dict[str, object]
+    # 失败原因, 成功为 None; planning_node 按它映射 error_code, 不解析 message
+    failure_reason: FailureReason | None = None
+
+
+# plan 超过 plan_timeout_s: 检查点抛出, plan 捕获后返回失败结果 (args[0] = 超时所在阶段)。
+class _PlanTimeout(Exception):
+    pass
 
 
 # 分层图 (层 = 路径采样点 N, 节点 = roll 采样 R)。
@@ -156,6 +132,7 @@ class Type3Planner:
         continuation: dict | None = None,
         start_joint_tolerance_rad: float | None = None,
         max_joint_step_rad: float | None = None,
+        plan_timeout_s: float = 0.0,
     ) -> None:
         self.arm = arm
         # 兑换站装配几何: r_p/r_q 为 p/q 旋转的回转半径 [m], phi 为 p 旋转的相位偏置 [rad] (用法见 _poses)。
@@ -194,6 +171,11 @@ class Type3Planner:
         )
         # 相邻路点最大单轴关节变化 (rad) 的硬门槛; None = 不限 (只靠运动代价, 旧行为)
         self.max_joint_step = None if max_joint_step_rad is None else float(max_joint_step_rad)
+        # 单次 plan 的时间预算 (s); 0 = 不限。 建图之后在修复 / 后续分支的逐点循环里查, 超了判失败
+        self.plan_timeout_s = float(plan_timeout_s)
+        if not np.isfinite(self.plan_timeout_s) or self.plan_timeout_s < 0.0:
+            raise ValueError("plan_timeout_s must be finite and >= 0 (0 = no limit)")
+        self._deadline: float | None = None
 
     # 主入口: 建图 -> (可选) 过滤末端后续分支 -> Viterbi 搜索 -> (可选) best-effort 修复 -> 起点衔接检查 -> 组装结果。
     # station_transform: (4, 4) 兑换站在 arm_base 下的位姿; initial_joints: (6,) 实测关节角 [rad]。
@@ -215,8 +197,50 @@ class Type3Planner:
         if initial.shape != (6,):
             raise ValueError(f"initial_joints must have shape (6,), got {initial.shape}")
 
-        # 建分层图; 若给了末端后续分支, 剔除末端层中走不通后续分支的节点, 并按 roll 索引缓存后续结果。
+        started = time.monotonic()
+        # 建分层图 (批量 IK + 碰撞, 不可中断, 之后才开始查预算)。
         graph, diagnostics = self._build_graph(path, station, collision_checker)
+        diagnostics["timed_out"] = False
+        self._deadline = started + self.plan_timeout_s if self.plan_timeout_s > 0.0 else None
+        try:
+            result = self._plan_on_graph(
+                graph, diagnostics, station, initial, collision_checker, terminal_continuations
+            )
+            # 整次 plan 耗时 (s, 含建图), 成功/失败都记, 用来定 plan_timeout_s
+            diagnostics["elapsed_s"] = time.monotonic() - started
+            return result
+        except _PlanTimeout as exc:
+            # 超时: 判失败, 保留建图诊断
+            diagnostics["timed_out"] = True
+            diagnostics["elapsed_s"] = time.monotonic() - started
+            return Type3PlanResult(
+                success=False,
+                message=(
+                    f"type3 planner timed out during {exc} "
+                    f"elapsed_s={diagnostics['elapsed_s']:.3f} plan_timeout_s={self.plan_timeout_s:.3f}"
+                ),
+                cost=float("inf"),
+                waypoints=np.zeros((0, 6), dtype=float),
+                rolls=np.zeros(0, dtype=float),
+                path=None,
+                continuation=None,
+                diagnostics=diagnostics,
+                failure_reason=FailureReason.TIMEOUT,
+            )
+        finally:
+            self._deadline = None
+
+    # 预算检查点: 超过 plan 开始时定的截止时间就抛 _PlanTimeout (stage = 当前所在阶段, 进失败说明)。
+    def _check_deadline(self, stage: str) -> None:
+        if self._deadline is not None and time.monotonic() > self._deadline:
+            raise _PlanTimeout(stage)
+
+    # plan 的建图之后部分: 过滤后续分支 -> Viterbi -> (可选) 修复 -> 起点衔接 -> 组装结果。
+    def _plan_on_graph(
+        self, graph, diagnostics, station, initial, collision_checker, terminal_continuations
+    ) -> Type3PlanResult:
+        self._check_deadline("graph")
+        # 若给了末端后续分支, 剔除末端层中走不通后续分支的节点, 并按 roll 索引缓存后续结果。
         continuation_cache: dict[int, dict[str, object]] = {}
         if terminal_continuations:
             continuation_cache, continuation_diagnostics = self._filter_terminal_continuations(
@@ -234,6 +258,7 @@ class Type3Planner:
         # 严格失败且启用 best_effort: 允许经过无效节点 (固定惩罚) 再搜一次, 再对无效节点做数值 IK 修复;
         # 修复不达标仍判失败。
         if path_indices is None and bool(self.best_effort.get("enabled", False)):
+            self._check_deadline("search")
             path_indices, cost = self._search(graph, initial, allow_invalid=True)
             if path_indices is not None:
                 waypoints, repair_diagnostics = self._repair(
@@ -260,6 +285,7 @@ class Type3Planner:
                 path=None,
                 continuation=None,
                 diagnostics=diagnostics,
+                failure_reason=self._graph_failure_reason(graph, diagnostics, repair_diagnostics),
             )
 
         # 严格搜索成功时直接取图中关节解, 连续关节 unwrap 并对齐到 initial 附近的 2π 圈。
@@ -270,12 +296,12 @@ class Type3Planner:
         selected_rolls = np.unwrap(np.asarray([graph.rolls[j] for _, j in path_indices]))
         # 相邻路点跳变复查 (修复出来的点没经过搜索里的门槛), 再做首点与实测起点的衔接检查。
         jump_reason = self._check_steps(waypoints, diagnostics)
-        start_ok, start_reason = (
-            (False, jump_reason)
+        start_failure, start_reason = (
+            (FailureReason.JOINT_JUMP, jump_reason)
             if jump_reason is not None
             else self._check_start(waypoints[0], initial, collision_checker, diagnostics)
         )
-        if not start_ok:
+        if start_failure is not None:
             return Type3PlanResult(
                 success=False,
                 message=start_reason,
@@ -285,6 +311,7 @@ class Type3Planner:
                 path=None,
                 continuation=None,
                 diagnostics=diagnostics,
+                failure_reason=start_failure,
             )
         # 末端后续分支: 走过修复时末端关节可能已变, 需用实际末端关节重新评估; 否则直接取建图时的缓存。
         continuation = None
@@ -318,6 +345,7 @@ class Type3Planner:
                     path=path_indices,
                     continuation=None,
                     diagnostics=diagnostics,
+                    failure_reason=FailureReason.NO_CONTINUATION,
                 )
         if diagnostics["start_connected"]:
             # 轨迹从实测关节角出发: 第 0 点 = initial, 再接流形首点
@@ -499,7 +527,10 @@ class Type3Planner:
         )
 
     def _check_start(self, first, initial, collision_checker, diagnostics):
-        """实测起点 -> 流形首点: 差值超阈值则拒绝; 阈值内则连接段逐点查碰撞。"""
+        """实测起点 -> 流形首点: 差值超阈值则拒绝; 阈值内则连接段逐点查碰撞。
+
+        返回 (失败原因 或 None, 说明)。
+        """
         # 最大单轴关节差 (连续关节按最短角距)。
         delta = self.arm.joint_space.delta(first[None, :], initial[None, :])[0]
         max_delta = float(np.max(np.abs(delta)))
@@ -507,23 +538,23 @@ class Type3Planner:
         diagnostics["start_connected"] = False
         # 超出容差或非有限: 直接拒绝。
         if not np.isfinite(max_delta) or max_delta > self.start_tolerance:
-            return False, (
+            return FailureReason.START_MISMATCH, (
                 f"start joints do not match first assembly waypoint "
                 f"max_delta_rad={max_delta:.4f} tolerance_rad={self.start_tolerance:.4f}"
             )
         # 几乎重合: 不需要连接段。
         if max_delta <= START_EXACT_TOLERANCE_RAD:
-            return True, "ok"
+            return None, "ok"
         # initial -> 首点按 START_CONNECTION_STEP_RAD 线性插值, 逐点查碰撞。
         if collision_checker is not None:
             count = max(2, int(np.ceil(max_delta / START_CONNECTION_STEP_RAD)) + 1)
             fraction = np.linspace(0.0, 1.0, count)[:, None]
             connection = initial[None, :] + fraction * delta[None, :]
             if np.any(collision_checker.check_configs(connection)):
-                return False, "start connection to first assembly waypoint collides"
+                return FailureReason.COLLISION, "start connection to first assembly waypoint collides"
         # 标记需在轨迹前插入 initial 作为第 0 点 (见 plan)。
         diagnostics["start_connected"] = True
-        return True, "ok"
+        return None, "ok"
 
     # 返回 None 表示接受, 否则返回拒绝原因字符串。
     def _repair_accepted(self, q, metric):
@@ -564,6 +595,7 @@ class Type3Planner:
         reject_reasons = []
         # 逐层前推; q_ref 是上一点的关节, 作为数值 IK 初值与对齐参考。
         for layer, roll_index in path:
+            self._check_deadline("repair")
             if graph.valid[layer, roll_index]:
                 q = graph.joints[layer, roll_index]
                 metric = None
@@ -587,6 +619,8 @@ class Type3Planner:
             if collision_checker is None
             else collision_checker.check_configs(joints)
         )
+        # 残差 / 限位类拒绝数 (碰撞另计), 决定失败原因是 repair_rejected 还是 collision
+        tolerance_rejects = len(reject_reasons)
         if np.any(collisions):
             reject_reasons.append(f"collision@{np.flatnonzero(collisions).tolist()}")
         # 汇总: 有任何拒绝原因即失败; 误差统计只针对被修复的节点。
@@ -594,6 +628,7 @@ class Type3Planner:
             "success": not reject_reasons,
             "reject_reason": ",".join(reject_reasons) or None,
             "repair_count": int(np.count_nonzero(invalid_mask)),
+            "tolerance_reject_count": tolerance_rejects,
             "collision_count": int(np.count_nonzero(collisions)),
             "max_pos_error_m": max((m[0] for m in metrics), default=0.0),
             "max_axis_error_rad": max((m[1] for m in metrics), default=0.0),
@@ -677,6 +712,7 @@ class Type3Planner:
         reasons: dict[str, int] = {}
         terminal = len(graph.valid) - 1
         for roll_index in np.flatnonzero(graph.valid[terminal]):
+            self._check_deadline("continuation")
             checked += 1
             branches = []
             branch_reasons = []
@@ -749,6 +785,7 @@ class Type3Planner:
             q_ref = np.asarray(start)
             for index in range(len(joints)):
                 if not valid[index]:
+                    self._check_deadline("continuation")
                     joints[index], metric = self._approximate_ik(targets[index], q_ref)
                     if self._repair_accepted(joints[index], metric) is not None:
                         return None, "repair_tolerance"
@@ -840,6 +877,26 @@ class Type3Planner:
         return self.motion_l1_weight * np.sum(np.abs(delta), axis=-1) + self.motion_l2_weight * np.sum(
             delta * delta, axis=-1
         )
+
+    # 严格图 (+ 可选修复) 无解时的失败原因。
+    # 修复被拒: 有残差 / 限位拒绝 -> repair_rejected, 只有碰撞 -> collision。
+    # 否则看首个全无效层: IK 全无解 -> ik_unreachable; 有碰撞剔除 -> collision;
+    # IK 有解且无碰撞却全无效 -> 被后续分支过滤 (no_continuation)。 没有全无效层 -> 带宽 / 跳变挡住 (no_path)。
+    @staticmethod
+    def _graph_failure_reason(graph, diagnostics, repair_diagnostics) -> FailureReason:
+        if repair_diagnostics is not None and not bool(repair_diagnostics["success"]):
+            if int(repair_diagnostics["tolerance_reject_count"]) > 0:
+                return FailureReason.REPAIR_REJECTED
+            return FailureReason.COLLISION
+        first_zero = np.flatnonzero(np.count_nonzero(graph.valid, axis=1) == 0)
+        if len(first_zero) == 0:
+            return FailureReason.NO_PATH
+        layer = int(first_zero[0])
+        if int(diagnostics["ik_valid_by_step"][layer]) == 0:
+            return FailureReason.IK_UNREACHABLE
+        if int(diagnostics["collision_rejected_by_step"][layer]) > 0:
+            return FailureReason.COLLISION
+        return FailureReason.NO_CONTINUATION
 
     # 失败说明: 末端层有效节点数、首个全无效层号、后续分支被拒原因统计。
     @staticmethod

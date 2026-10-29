@@ -192,6 +192,7 @@ planning:
         joint_limit_weight: 5.0
         max_joint_step_rad: 0.4
         start_joint_tolerance_rad: 0.05
+        plan_timeout_s: 0.0          # 单次装配规划时间预算 (s), 0 = 关闭
         q_sweep:
           sample_step_deg: 5.0
           motion_weight: 1.0
