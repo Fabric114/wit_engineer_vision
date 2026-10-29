@@ -1,6 +1,3 @@
-# planning_node.py — 规划主节点 (接近段 BIT* / 装配段 type3 两条请求-结果通道的 ROS 薄层)。
-
-
 from __future__ import annotations
 
 # 标准库 / 第三方 / ROS 消息依赖
@@ -346,8 +343,7 @@ class PlanningNode(Node):
     def _make_collision_checker(self, station_transform: np.ndarray, *, stage: str):
         """给定兑换站位姿建一次性碰撞检查器。
 
-        场景见 CollisionModel.scene_groups: 站体 + 桩体 + 车体 / 地面; stage="assembly" 时桩体对
-        config 的 collision.station.assembly_allowed_contact 豁免 (允许接触规则)。
+        场景见 CollisionModel.scene_groups: 站体 + 桩体 + 车体 / 地面; stage="assembly" 时不放桩体。
         """
         from planning.collision import CollisionChecker
 
@@ -597,8 +593,7 @@ class PlanningNode(Node):
             f"roll_count={len(self.type3_planner.rolls)}"
         )
 
-        # 装配段检查器**放**局部桩体, 但对 assembly_allowed_contact 里的胶囊豁免
-        # (原因见 _make_collision_checker)
+        # 装配段检查器不放局部桩体 (同 RM2026, 原因见 CollisionModel.scene_groups)
         collision_checker = self._make_collision_checker(station, stage="assembly")
         plan = self.type3_planner.plan(
             path,

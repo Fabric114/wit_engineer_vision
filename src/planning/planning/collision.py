@@ -21,7 +21,7 @@ _MESH_TO_STATION_ROTATION = np.asarray(
 )
 
 # 网格组: (一组 OBJ 路径, 该组 4x4 位姿[, 允许与该组接触的胶囊名]); 同组网格共享同一位姿。
-# 第三项可省; 写了就跳过这些胶囊与本组的检测 (允许接触规则, 如装配时夹爪 vs 桩体)。
+# 第三项可省; 写了就跳过这些胶囊与本组的检测 (允许接触规则, 如 cc_link1 vs 车体 base_link)。
 MeshGroup = tuple  # (Sequence[str | Path], np.ndarray) | (Sequence[str | Path], np.ndarray, Collection[str])
 
 
@@ -74,8 +74,6 @@ class CollisionModel:
     local_exchange_meshes: tuple[Path, ...]
     arm_capsules: tuple[CapsuleSpec, ...]
     body_groups: tuple = ()
-    # 装配段允许与局部桩体接触的胶囊名 (允许接触规则)
-    assembly_allowed_contact: frozenset[str] = frozenset()
 
     @classmethod
     def from_config(cls, config: dict) -> "CollisionModel":
@@ -89,8 +87,6 @@ class CollisionModel:
             raise ValueError("collision model requires at least one arm capsule")
         asset_dir = _asset_dir(station.get("asset_dir"))
         names = {capsule.name for capsule in capsules}
-        allowed = frozenset(station.get("assembly_allowed_contact", ()) or ())
-        _check_capsule_names(allowed, names, "collision.station.assembly_allowed_contact")
         return cls(
             station_meshes=_asset_paths(station["meshes"], asset_dir, required=True),
             local_exchange_meshes=_asset_paths(
@@ -100,22 +96,20 @@ class CollisionModel:
             body_groups=_body_groups(
                 config.get("robot_body"), config.get("ground"), names, float(config.get("line_m", 0.0) or 0.0)
             ),
-            assembly_allowed_contact=allowed,
         )
 
     def scene_groups(self, station_transform: np.ndarray, *, stage: str) -> list:
         """按阶段组装碰撞场景 (交给 CollisionChecker 的网格组)。
 
         - ``approach``: 站体 + 局部桩体 (全部胶囊都查) + 车体 / 地面;
-        - ``assembly``: 同上, 但桩体对 ``assembly_allowed_contact`` 里的胶囊豁免 —— 装配本来就要
-          贴着桩体, 这是"允许接触规则"。 豁免意味着这些胶囊与桩体之间**不再检查**, 不是"保证不撞"。
+        - ``assembly``: 站体 + 车体 / 地面, 不放局部桩体 (同 RM2026)。 装配时机械臂握着已插在桩上的
+          能量单元上推 / 转 P、Q, 臂不会碰到桩体, 矿石与桩体本来就贴合。
         """
         if stage not in ("approach", "assembly"):
             raise ValueError(f"unknown collision scene stage {stage!r}")
         groups = [(self.station_meshes, station_transform)]
-        if self.local_exchange_meshes:
-            allowed = self.assembly_allowed_contact if stage == "assembly" else frozenset()
-            groups.append((self.local_exchange_meshes, station_transform, allowed))
+        if self.local_exchange_meshes and stage == "approach":
+            groups.append((self.local_exchange_meshes, station_transform))
         groups.extend(self.body_groups)
         return groups
 

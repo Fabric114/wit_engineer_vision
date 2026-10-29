@@ -61,8 +61,7 @@ collision:
       - asset: exchange_station_dark.obj
       - asset: exchange_station_glow.obj
     local_exchange_meshes:
-      - asset: exchange_column_collision.obj
-    assembly_allowed_contact: [cc_link6, cc_ore]
+      - asset: exchange_column_collision.obj   # 只用于接近 / 撤退段, 装配段不查
 
   # 车体,26老车暂时不含自碰撞
   robot_body:
